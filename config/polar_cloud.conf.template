@@ -1,0 +1,47 @@
+# Polar Cloud Configuration
+# 
+# SETUP INSTRUCTIONS:
+# 1. Web Interface (Recommended): Navigate to http://your-printer-ip/polar-cloud/
+# 2. Manual Setup: Fill in your credentials below and restart the polar_cloud service
+#
+# To restart the service after manual configuration:
+#   sudo systemctl restart polar_cloud
+#
+# To check service status:
+#   sudo systemctl status polar_cloud
+#
+# To view logs:
+#   sudo journalctl -u polar_cloud -f
+
+[polar_cloud]
+# Polar Cloud Server Configuration
+server_url = https://printer4.polar3d.com
+
+# User Credentials
+# You can set these here directly or use the web interface at /polar-cloud/
+# Get your PIN from: https://polar3d.com/
+username = 
+pin = 
+serial_number = 
+
+# Printer Configuration
+# Machine types: Cartesian, Delta, Belt
+machine_type = Cartesian
+
+# Printer types: Use the web interface to see available options
+# or check https://polar3d.com/api/v1/printer_makes for the full list
+printer_type = Cartesian
+
+# Image Settings
+max_image_size = 150000
+# Set to false if you don't have a webcam configured
+webcam_enabled = true
+
+# Debug Settings
+verbose = false
+
+# Connection Settings
+status_interval = 60
+
+# NOTE: After changing any settings in this file, restart the service:
+# sudo systemctl restart polar_cloud

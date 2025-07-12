@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polar Cloud Configuration</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e1e1e 0%, #2d2d2d 100%);
+            color: #ffffff;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            background: linear-gradient(45deg, #4CAF50, #2196F3);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .header p {
+            color: #cccccc;
+            font-size: 1.1rem;
+        }
+
+        .status-section {
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 0;
+        }
+
+        .status-label {
+            color: #cccccc;
+            font-weight: 500;
+        }
+
+        .status-value {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .status-dot.active {
+            background: #4CAF50;
+            box-shadow: 0 0 10px rgba(76, 175, 80, 0.6);
+        }
+
+        .status-dot.warning {
+            background: #FF9800;
+            box-shadow: 0 0 10px rgba(255, 152, 0, 0.6);
+        }
+
+        .status-dot.inactive {
+            background: #666666;
+        }
+
+        .form-section {
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #cccccc;
+            font-weight: 500;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 6px;
+            color: #ffffff;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        input:focus, select:focus {
+            outline: none;
+            border-color: #2196F3;
+            box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.3);
+            background: rgba(255, 255, 255, 0.15);
+        }
+
+        input::placeholder {
+            color: #aaaaaa;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            min-width: 120px;
+            justify-content: center;
+        }
+
+        .btn-primary {
+            background: linear-gradient(45deg, #2196F3, #21CBF3);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(33, 150, 243, 0.4);
+        }
+
+        .btn-danger {
+            background: linear-gradient(45deg, #f44336, #ff6b6b);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(244, 67, 54, 0.4);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: translateY(-2px);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: #cccccc;
+        }
+
+        .loading.show {
+            display: block;
+        }
+
+        .message {
+            padding: 15px;
+            border-radius: 6px;
+            margin: 15px 0;
+            display: none;
+        }
+
+        .message.success {
+            background: rgba(76, 175, 80, 0.2);
+            border: 1px solid rgba(76, 175, 80, 0.5);
+            color: #4CAF50;
+        }
+
+        .message.error {
+            background: rgba(244, 67, 54, 0.2);
+            border: 1px solid rgba(244, 67, 54, 0.5);
+            color: #f44336;
+        }
+
+        .message.show {
+            display: block;
+        }
+
+        .navigation {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .navigation a {
+            color: #2196F3;
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .navigation a:hover {
+            text-decoration: underline;
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                padding: 20px;
+            }
+
+            .header h1 {
+                font-size: 2rem;
+            }
+
+            .form-row {
+                grid-template-columns: 1fr;
+            }
+
+            .button-group {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="navigation">
+            <a href="/">← Back to Mainsail</a>
+        </div>
+
+        <div class="header">
+            <h1>☁️ Polar Cloud</h1>
+            <p>Connect your 3D printer to Polar Cloud for remote monitoring</p>
+        </div>
+
+        <div class="status-section">
+            <h3 style="margin-bottom: 15px; color: #ffffff;">Connection Status</h3>
+            <div class="status-grid">
+                <div class="status-item">
+                    <span class="status-label">Service Status:</span>
+                    <span class="status-value">
+                        <span class="status-dot inactive" id="service-dot"></span>
+                        <span id="service-status">Loading...</span>
+                    </span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Registration:</span>
+                    <span class="status-value">
+                        <span class="status-dot inactive" id="registration-dot"></span>
+                        <span id="registration-status">Loading...</span>
+                    </span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Username:</span>
+                    <span class="status-value" id="username-display">Loading...</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Serial Number:</span>
+                    <span class="status-value" id="serial-display">Loading...</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="form-section">
+            <h3 style="margin-bottom: 20px; color: #ffffff;">Configuration</h3>
+            
+            <div class="form-group">
+                <div class="form-row">
+                    <div>
+                        <label for="username">Email/Username</label>
+                        <input type="email" id="username" placeholder="your@email.com" required>
+                    </div>
+                    <div>
+                        <label for="pin">PIN</label>
+                        <input type="password" id="pin" placeholder="Your Polar Cloud PIN" required>
+                    </div>
+                </div>
+                
+                <div class="form-row">
+                    <div>
+                        <label for="machine-type">Machine Type</label>
+                        <select id="machine-type">
+                            <option value="">Select machine type...</option>
+                            <option value="Cartesian">Cartesian</option>
+                            <option value="Delta">Delta</option>
+                            <option value="Belt">Belt</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="printer-type">Printer Type</label>
+                        <select id="printer-type">
+                            <option value="">Select printer type...</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="button-group">
+                <button class="btn btn-primary" id="connect-btn">
+                    <span>🔗</span> Connect to Polar Cloud
+                </button>
+                <button class="btn btn-danger" id="disconnect-btn" style="display: none;">
+                    <span>🔌</span> Disconnect
+                </button>
+                <button class="btn btn-secondary" id="refresh-btn">
+                    <span>🔄</span> Refresh Status
+                </button>
+                <button class="btn btn-secondary" id="export-logs-btn">
+                    <span>📋</span> Export Logs
+                </button>
+            </div>
+        </div>
+
+        <div class="loading" id="loading">
+            <p>⏳ Processing...</p>
+        </div>
+
+        <div class="message" id="message"></div>
+    </div>
+
+    <script>
+        const API_BASE = '/server/polar_cloud';
+        
+        // State
+        let currentStatus = {};
+
+        // DOM Elements
+        const serviceDot = document.getElementById('service-dot');
+        const serviceStatus = document.getElementById('service-status');
+        const registrationDot = document.getElementById('registration-dot');
+        const registrationStatus = document.getElementById('registration-status');
+        const usernameDisplay = document.getElementById('username-display');
+        const serialDisplay = document.getElementById('serial-display');
+        
+        const usernameInput = document.getElementById('username');
+        const pinInput = document.getElementById('pin');
+        const machineTypeSelect = document.getElementById('machine-type');
+        const printerTypeSelect = document.getElementById('printer-type');
+        
+        const connectBtn = document.getElementById('connect-btn');
+        const disconnectBtn = document.getElementById('disconnect-btn');
+        const refreshBtn = document.getElementById('refresh-btn');
+        const exportLogsBtn = document.getElementById('export-logs-btn');
+        const loading = document.getElementById('loading');
+        const message = document.getElementById('message');
+
+        // Event Listeners
+        connectBtn.addEventListener('click', handleConnect);
+        disconnectBtn.addEventListener('click', handleDisconnect);
+        refreshBtn.addEventListener('click', loadStatus);
+        exportLogsBtn.addEventListener('click', handleExportLogs);
+        machineTypeSelect.addEventListener('change', handleMachineTypeChange);
+        
+        // Save form values to localStorage when they change
+        usernameInput.addEventListener('input', saveFormToStorage);
+        pinInput.addEventListener('input', saveFormToStorage);
+        machineTypeSelect.addEventListener('change', saveFormToStorage);
+        printerTypeSelect.addEventListener('change', saveFormToStorage);
+
+        // Initialize
+        loadFormFromStorage(); // Load saved form values first
+        
+        // Load printer types after form is restored, then load status
+        if (machineTypeSelect.value) {
+            loadPrinterTypes().then(() => {
+                // Now that printer types are loaded, load the status
+                // which might override the form values with server values
+                loadStatus();
+            });
+        } else {
+            // No machine type selected yet, just load status
+            loadStatus();
+        }
+        
+        function saveFormToStorage() {
+            const formData = {
+                username: usernameInput.value,
+                pin: pinInput.value,
+                machine_type: machineTypeSelect.value,
+                printer_type: printerTypeSelect.value
+            };
+            localStorage.setItem('polar_cloud_form', JSON.stringify(formData));
+        }
+        
+        function loadFormFromStorage() {
+            try {
+                const savedData = localStorage.getItem('polar_cloud_form');
+                if (savedData) {
+                    const formData = JSON.parse(savedData);
+                    
+                    // Restore form values from localStorage
+                    if (formData.username) usernameInput.value = formData.username;
+                    if (formData.pin) pinInput.value = formData.pin;
+                    if (formData.machine_type) machineTypeSelect.value = formData.machine_type;
+                    // Note: printer_type will be set after loadPrinterTypes() completes
+                    
+                    // Store the printer type to be set later
+                    if (formData.printer_type) {
+                        printerTypeSelect.dataset.savedValue = formData.printer_type;
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading form from storage:', error);
+            }
+        }
+
+        async function loadStatus() {
+            try {
+                showLoading(true);
+                const response = await fetch(`${API_BASE}/status`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                currentStatus = data.result;
+                updateUI();
+                
+            } catch (error) {
+                console.error('Error loading status:', error);
+                showMessage('Failed to load status: ' + error.message, 'error');
+                
+                // Set error state
+                serviceStatus.textContent = 'Error';
+                registrationStatus.textContent = 'Error';
+                usernameDisplay.textContent = 'Error';
+                serialDisplay.textContent = 'Error';
+                
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function updateUI() {
+            // Update status display
+            const isActive = currentStatus.service_status === 'active';
+            const isConnected = currentStatus.connected === true;
+            const isAuthenticated = currentStatus.authenticated === true;
+            const isRegistered = currentStatus.registered;
+            
+            // Service status - show connection state
+            if (!isActive) {
+                serviceDot.className = 'status-dot inactive';
+                serviceStatus.textContent = 'Service Inactive';
+            } else if (isAuthenticated) {
+                serviceDot.className = 'status-dot active';
+                serviceStatus.textContent = 'Connected & Authenticated';
+            } else if (isConnected) {
+                serviceDot.className = 'status-dot warning';
+                serviceStatus.textContent = 'Connected (Not Authenticated)';
+            } else {
+                serviceDot.className = 'status-dot warning';
+                serviceStatus.textContent = 'Service Active (Not Connected)';
+            }
+            
+            // Registration status
+            registrationDot.className = `status-dot ${isRegistered ? 'active' : (isActive ? 'warning' : 'inactive')}`;
+            registrationStatus.textContent = isRegistered ? 'Registered' : 'Not Registered';
+            
+            // User info
+            usernameDisplay.textContent = currentStatus.username || 'Not set';
+            serialDisplay.textContent = currentStatus.serial_number || 'Not registered';
+            
+            // Form - prefer server values over localStorage for registered users
+            if (currentStatus.username && (!usernameInput.value || currentStatus.username !== usernameInput.value)) {
+                usernameInput.value = currentStatus.username;
+            }
+            // PIN is never returned from server for security reasons - keep localStorage value
+            
+            if (currentStatus.machine_type && (!machineTypeSelect.value || currentStatus.machine_type !== machineTypeSelect.value)) {
+                machineTypeSelect.value = currentStatus.machine_type;
+                // Load printer types for the current machine type, then set the value
+                loadPrinterTypes().then(() => {
+                    if (currentStatus.printer_type) {
+                        printerTypeSelect.value = currentStatus.printer_type;
+                    }
+                });
+            } else if (currentStatus.printer_type && (!printerTypeSelect.value || currentStatus.printer_type !== printerTypeSelect.value)) {
+                // Machine type hasn't changed, just update printer type
+                printerTypeSelect.value = currentStatus.printer_type;
+            }
+            
+            // Save current form state after updating from server
+            saveFormToStorage();
+            
+            // Buttons
+            if (isRegistered) {
+                connectBtn.style.display = 'none';
+                disconnectBtn.style.display = 'inline-flex';
+            } else {
+                connectBtn.style.display = 'inline-flex';
+                disconnectBtn.style.display = 'none';
+            }
+        }
+
+        async function handleConnect() {
+            const username = usernameInput.value.trim();
+            const pin = pinInput.value.trim();
+            const machineType = machineTypeSelect.value;
+            const printerType = printerTypeSelect.value;
+            
+            if (!username || !pin) {
+                showMessage('Please enter both username and PIN', 'error');
+                return;
+            }
+            
+            if (!machineType) {
+                showMessage('Please select a machine type', 'error');
+                return;
+            }
+            
+            if (!printerType) {
+                showMessage('Please select a printer type', 'error');
+                return;
+            }
+            
+            try {
+                showLoading(true);
+                
+                const response = await fetch(`${API_BASE}/register`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        username: username,
+                        pin: pin,
+                        machine_type: machineType,
+                        printer_type: printerType
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showMessage('Successfully connected to Polar Cloud!', 'success');
+                    setTimeout(loadStatus, 2000);
+                } else {
+                    const errorMsg = typeof result.error === 'object' ? JSON.stringify(result.error) : (result.error || 'Unknown error');
+                    showMessage('Connection failed: ' + errorMsg, 'error');
+                }
+                
+            } catch (error) {
+                console.error('Error connecting:', error);
+                showMessage('Connection failed: ' + error.message, 'error');
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        async function handleDisconnect() {
+            if (!confirm('Are you sure you want to disconnect from Polar Cloud?')) {
+                return;
+            }
+            
+            try {
+                showLoading(true);
+                
+                const response = await fetch(`${API_BASE}/unregister`, {
+                    method: 'POST'
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showMessage('Successfully disconnected from Polar Cloud', 'success');
+                    loadStatus();
+                } else {
+                    showMessage('Disconnect failed: ' + (result.error || 'Unknown error'), 'error');
+                }
+                
+            } catch (error) {
+                console.error('Error disconnecting:', error);
+                showMessage('Disconnect failed: ' + error.message, 'error');
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        async function handleExportLogs() {
+            try {
+                showLoading(true);
+                showMessage('Generating diagnostic logs, please wait...', 'success');
+                
+                const response = await fetch(`${API_BASE}/export_logs`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                // Get the filename from the response headers if available
+                const contentDisposition = response.headers.get('Content-Disposition');
+                let filename = 'polar_cloud_logs.txt';
+                if (contentDisposition) {
+                    const matches = contentDisposition.match(/filename="(.+)"/);
+                    if (matches) {
+                        filename = matches[1];
+                    }
+                }
+                
+                // Create blob and download
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+                
+                showMessage('Diagnostic logs exported successfully!', 'success');
+                
+            } catch (error) {
+                console.error('Error exporting logs:', error);
+                showMessage('Failed to export logs: ' + error.message, 'error');
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function showLoading(show) {
+            loading.classList.toggle('show', show);
+            connectBtn.disabled = show;
+            disconnectBtn.disabled = show;
+            refreshBtn.disabled = show;
+            exportLogsBtn.disabled = show;
+        }
+
+        function showMessage(text, type) {
+            message.textContent = text;
+            message.className = `message ${type} show`;
+            
+            setTimeout(() => {
+                message.classList.remove('show');
+            }, 5000);
+        }
+
+        async function loadPrinterTypes() {
+            try {
+                const machineType = machineTypeSelect.value;
+                if (!machineType) {
+                    // Clear printer types if no machine type selected
+                    printerTypeSelect.innerHTML = '<option value="">Select machine type first...</option>';
+                    return;
+                }
+                
+                // Call Polar Cloud API directly like OctoPrint does
+                const apiUrl = `https://polar3d.com/api/v1/printer_makes?filter=${machineType.toLowerCase()}`;
+                const response = await fetch(apiUrl);
+                
+                if (!response.ok) {
+                    throw new Error(`API request failed: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                // Extract printer types from API response
+                let printerTypes = [];
+                if (data && data.printerMakes && Array.isArray(data.printerMakes)) {
+                    printerTypes = data.printerMakes;
+                }
+                
+                // Add "Other/Custom" option
+                if (printerTypes.length > 0) {
+                    printerTypes.push("Other/Custom");
+                } else {
+                    // Fallback if no printers found
+                    printerTypes = [`${machineType}`, "Other/Custom"];
+                }
+                
+                populatePrinterTypeSelect(printerTypes);
+                
+            } catch (error) {
+                console.error('Error loading printer types:', error);
+                showMessage('Failed to load printer types, using defaults: ' + error.message, 'error');
+                
+                // Provide fallback printer types based on machine type
+                const machineType = machineTypeSelect.value || 'Cartesian';
+                const fallbackTypes = [`${machineType}`, "Other/Custom"];
+                populatePrinterTypeSelect(fallbackTypes);
+            }
+        }
+
+        function populatePrinterTypeSelect(types) {
+            printerTypeSelect.innerHTML = '';
+            
+            // Add a default "Select printer type" option
+            const defaultOption = document.createElement('option');
+            defaultOption.value = '';
+            defaultOption.textContent = 'Select printer type...';
+            printerTypeSelect.appendChild(defaultOption);
+            
+            types.forEach(type => {
+                const option = document.createElement('option');
+                option.value = type;
+                option.textContent = type;
+                printerTypeSelect.appendChild(option);
+            });
+            
+            // Restore saved printer type value if it exists
+            if (printerTypeSelect.dataset.savedValue) {
+                printerTypeSelect.value = printerTypeSelect.dataset.savedValue;
+                delete printerTypeSelect.dataset.savedValue;
+            }
+            
+            // If there's a current printer type, select it
+            if (currentStatus && currentStatus.printer_type) {
+                printerTypeSelect.value = currentStatus.printer_type;
+            }
+        }
+
+        function handleMachineTypeChange() {
+            loadPrinterTypes();
+        }
+    </script>
+</body>
+</html> 

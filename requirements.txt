@@ -1,0 +1,6 @@
+python-socketio[client]>=5.0
+cryptography>=3.0
+Pillow>=8.0
+requests>=2.25
+configparser>=5.0
+aiohttp>=3.7 
