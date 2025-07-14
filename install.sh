@@ -220,17 +220,7 @@ check_dependencies() {
         check_repositories
 
         # Update package lists with error handling
-        if ! sudo apt-get update; then
-            print_error "Failed to update package lists!"
-            print_info "This often happens on older systems where repositories have moved."
-            print_info "Common fixes:"
-            echo "  • For Debian Buster: repositories moved to archive.debian.org"
-            echo "  • For older Ubuntu: check /etc/apt/sources.list for correct URLs"
-            echo "  • Run: sudo apt-get update manually to see specific errors"
-            echo ""
-            print_info "Repository configuration backup saved to: /etc/apt/sources.list.backup"
-            exit 1
-        fi
+        sudo apt-get update
 
         # Install packages with error handling
         if ! sudo apt-get install -y python3 python3-pip python3-venv git nginx; then
