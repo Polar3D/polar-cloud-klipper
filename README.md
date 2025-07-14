@@ -44,7 +44,7 @@ Your system should have:
 
 ```bash
 # Download the installer
-git clone https://github.com/your-username/polar-cloud-klipper.git
+git clone https://github.com/Polar3D/polar-cloud-klipper.git
 cd polar-cloud-klipper
 
 # Run the installer
