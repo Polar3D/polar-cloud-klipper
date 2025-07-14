@@ -167,6 +167,36 @@ detect_moonraker() {
     print_success "Components directory: $MOONRAKER_COMPONENTS"
 }
 
+# Check and fix repository configuration
+check_repositories() {
+    print_info "Checking package repositories..."
+
+    # Check if we're on Debian Buster (oldstable)
+    if [ -f /etc/os-release ]; then
+        source /etc/os-release
+        if [[ "$VERSION_CODENAME" == "buster" || "$VERSION" == *"buster"* ]]; then
+            print_warning "Detected Debian Buster (oldstable)"
+            print_info "Debian Buster repositories have moved to archive servers"
+
+            # Check if repositories are already fixed
+            if grep -q "archive.debian.org" /etc/apt/sources.list; then
+                print_success "Archive repositories already configured"
+            else
+                print_info "Fixing repository configuration for Debian Buster..."
+
+                # Backup original sources.list
+                sudo cp /etc/apt/sources.list /etc/apt/sources.list.backup
+
+                # Update repository URLs
+                sudo sed -i 's|http://deb.debian.org/debian|http://archive.debian.org/debian|g' /etc/apt/sources.list
+                sudo sed -i 's|http://security.debian.org|http://archive.debian.org/debian-security|g' /etc/apt/sources.list
+
+                print_success "Updated repository configuration for Debian Buster"
+            fi
+        fi
+    fi
+}
+
 # Check dependencies
 check_dependencies() {
     print_info "Checking system dependencies..."
@@ -185,8 +215,47 @@ check_dependencies() {
     
     if [ "$deps_missing" = true ]; then
         print_info "Installing missing dependencies..."
-        sudo apt-get update
-        sudo apt-get install -y python3 python3-pip python3-venv git nginx
+
+# Check repositories first
+        check_repositories
+
+        # Update package lists with error handling
+        if ! sudo apt-get update; then
+            print_error "Failed to update package lists!"
+            print_info "This often happens on older systems where repositories have moved."
+            print_info "Common fixes:"
+            echo "  • For Debian Buster: repositories moved to archive.debian.org"
+            echo "  • For older Ubuntu: check /etc/apt/sources.list for correct URLs"
+            echo "  • Run: sudo apt-get update manually to see specific errors"
+            echo ""
+            print_info "Repository configuration backup saved to: /etc/apt/sources.list.backup"
+            exit 1
+        fi
+
+        # Install packages with error handling
+        if ! sudo apt-get install -y python3 python3-pip python3-venv git nginx; then
+            print_error "Failed to install required packages!"
+            print_info "Please manually install missing packages and run installer again:"
+            echo "  sudo apt-get install python3 python3-pip python3-venv git nginx"
+            exit 1
+        fi
+
+        # Verify installation succeeded
+        local install_failed=false
+        for pkg in "${required_packages[@]}"; do
+            if ! command -v "$pkg" &> /dev/null && ! dpkg -l "$pkg" &> /dev/null 2>&1; then
+                print_error "Package '$pkg' still missing after installation!"
+                install_failed=true
+            fi
+        done
+
+        if [ "$install_failed" = true ]; then
+            print_error "Some packages failed to install properly"
+            print_info "Please install missing packages manually and run installer again"
+            exit 1
+        fi
+
+        print_success "All dependencies installed successfully"
     fi
 }
 
