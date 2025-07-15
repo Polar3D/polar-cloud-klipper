@@ -286,8 +286,7 @@ install_files() {
     print_info "Installing Polar Cloud files..."
     
     # Copy main service file
-    cp "$SCRIPT_DIR/src/polar_cloud.py" "$POLAR_DIR/"
-    chown "$USER:$USER" "$POLAR_DIR/polar_cloud.py"
+    sudo -u "$USER" cp "$SCRIPT_DIR/src/polar_cloud.py" "$POLAR_DIR/"
     print_success "Installed main service"
     
     # Copy Moonraker plugin
@@ -295,14 +294,12 @@ install_files() {
     print_success "Installed Moonraker plugin"
     
     # Copy web interface
-    cp "$SCRIPT_DIR/src/polar_cloud_web.html" "$POLAR_DIR/web/index.html"
-    chown -R "$USER:$USER" "$POLAR_DIR/web"
+    sudo -u "$USER" cp "$SCRIPT_DIR/src/polar_cloud_web.html" "$POLAR_DIR/web/index.html"
     print_success "Installed web interface"
     
     # Copy configuration template if no config exists
     if [ ! -f "$PRINTER_DATA_DIR/config/polar_cloud.conf" ]; then
-        cp "$SCRIPT_DIR/config/polar_cloud.conf.template" "$PRINTER_DATA_DIR/config/polar_cloud.conf"
-        chown "$USER:$USER" "$PRINTER_DATA_DIR/config/polar_cloud.conf"
+        sudo -u "$USER" cp "$SCRIPT_DIR/config/polar_cloud.conf.template" "$PRINTER_DATA_DIR/config/polar_cloud.conf"
         print_success "Created configuration file"
     else
         print_info "Configuration file already exists, skipping"
@@ -310,8 +307,7 @@ install_files() {
     
     # Copy test scripts
     if [ -d "$SCRIPT_DIR/scripts" ]; then
-        cp "$SCRIPT_DIR/scripts/"*.py "$POLAR_DIR/" 2>/dev/null || true
-        chown "$USER:$USER" "$POLAR_DIR/"*.py
+        sudo -u "$USER" sh -c "cp '$SCRIPT_DIR/scripts/'*.py '$POLAR_DIR/'" 2>/dev/null || true
     fi
 }
 
