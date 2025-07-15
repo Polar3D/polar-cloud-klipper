@@ -28,7 +28,9 @@ import subprocess
 
 
 # --- Patch: Set logging level based on config verbose flag ---
-def get_verbose_flag(config_file='/home/pi/printer_data/config/polar_cloud.conf'):
+def get_verbose_flag(config_file=None):
+    if config_file is None:
+        config_file = os.path.expanduser('~/printer_data/config/polar_cloud.conf')
     import configparser
     config = configparser.ConfigParser()
     if os.path.exists(config_file):
@@ -66,7 +68,9 @@ class PolarCloudService:
     PSTATE_ERROR = 12
     PSTATE_OFFLINE = 13
 
-    def __init__(self, config_file='/home/pi/printer_data/config/polar_cloud.conf'):
+    def __init__(self, config_file=None):
+        if config_file is None:
+            config_file = os.path.expanduser('~/printer_data/config/polar_cloud.conf')
         self.config_file = config_file
         self.config = configparser.ConfigParser()
         self.sio = socketio.AsyncClient(
@@ -408,7 +412,7 @@ class PolarCloudService:
     
     def ensure_keys(self):
         """Generate or load RSA key pair"""
-        key_file = '/home/pi/printer_data/config/polar_cloud_key.pem'
+        key_file = os.path.expanduser('~/printer_data/config/polar_cloud_key.pem')
         
         if os.path.exists(key_file):
             # Load existing key
@@ -1046,7 +1050,7 @@ class PolarCloudService:
                 if response.status_code == 200:
                     # Save gcode file to printer
                     filename = f"polar_cloud_{job_id}.gcode"
-                    filepath = f"/home/pi/printer_data/gcodes/{filename}"
+                    filepath = os.path.expanduser(f"~/printer_data/gcodes/{filename}")
                     
                     with open(filepath, 'wb') as f:
                         f.write(response.content)
