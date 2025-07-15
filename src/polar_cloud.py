@@ -43,7 +43,7 @@ logging.basicConfig(
     level=_log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('/home/pi/printer_data/logs/polar_cloud.log'),
+        logging.FileHandler(os.path.expanduser('~/printer_data/logs/polar_cloud.log')),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -87,7 +87,7 @@ class PolarCloudService:
         self.last_status = None
         self.disconnect_on_register = True  # Enable disconnect after registration as per protocol
         self.disconnect_on_unregister = False
-        self.status_file = '/home/pi/printer_data/logs/polar_cloud_status.json'  # Status file for Moonraker plugin
+        self.status_file = os.path.expanduser('~/printer_data/logs/polar_cloud_status.json')  # Status file for Moonraker plugin
         
         # Image upload functionality
         self.upload_urls = {}  # Store pre-signed URLs by type

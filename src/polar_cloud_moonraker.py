@@ -15,7 +15,7 @@ class PolarCloudPlugin:
     def __init__(self, config):
         self.server = config.get_server()
         self.name = config.get_name()
-        self.config_file = "/home/pi/printer_data/config/polar_cloud.conf"
+        self.config_file = os.path.expanduser("~/printer_data/config/polar_cloud.conf")
         self.config = configparser.ConfigParser()
         self.load_config()
         
@@ -86,7 +86,7 @@ class PolarCloudPlugin:
             service_status = "active" if result.returncode == 0 else "inactive"
             
             # Try to read real-time status from the service's status file
-            status_file = '/home/pi/printer_data/logs/polar_cloud_status.json'
+            status_file = os.path.expanduser('~/printer_data/logs/polar_cloud_status.json')
             realtime_status = {}
             try:
                 if os.path.exists(status_file):
@@ -293,7 +293,7 @@ class PolarCloudPlugin:
             
             # 4. Current Status File
             logs.append("=== CURRENT STATUS ===")
-            status_file = '/home/pi/printer_data/logs/polar_cloud_status.json'
+            status_file = os.path.expanduser('~/printer_data/logs/polar_cloud_status.json')
             try:
                 if os.path.exists(status_file):
                     with open(status_file, 'r') as f:
@@ -308,7 +308,7 @@ class PolarCloudPlugin:
             
             # 5. Configuration
             logs.append("=== CONFIGURATION ===")
-            config_file = '/home/pi/printer_data/config/polar_cloud.conf'
+            config_file = os.path.expanduser('~/printer_data/config/polar_cloud.conf')
             try:
                 if os.path.exists(config_file):
                     with open(config_file, 'r') as f:
@@ -343,7 +343,7 @@ class PolarCloudPlugin:
             # 7. Moonraker Logs (last few lines mentioning polar_cloud)
             logs.append("=== MOONRAKER LOGS (Polar Cloud related) ===")
             try:
-                result = subprocess.run(['grep', '-i', 'polar', '/home/pi/printer_data/logs/moonraker.log'], 
+                result = subprocess.run(['grep', '-i', 'polar', os.path.expanduser('~/printer_data/logs/moonraker.log')], 
                                       capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
                     # Get last 20 lines
