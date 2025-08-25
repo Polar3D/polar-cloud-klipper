@@ -99,20 +99,42 @@ uninstall() {
         fi
     done
     
-    # Ask about configuration file
-    print_warning "Configuration file contains your Polar Cloud credentials."
-    read -p "Remove configuration file? (y/N) " -n 1 -r
+    # Ask about configuration file and registration
+    print_warning "Configuration file contains your Polar Cloud credentials and registration."
+    echo "Choose an option:"
+    echo "1) Keep configuration and registration (reconnect with same serial number)"
+    echo "2) Keep credentials but force re-registration (get new serial number)" 
+    echo "3) Remove all configuration and credentials"
+    read -p "Select option (1/2/3): " -n 1 -r
     echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        if [ -f "$HOME_DIR/printer_data/config/polar_cloud.conf" ]; then
-            rm "$HOME_DIR/printer_data/config/polar_cloud.conf"
-            print_success "Removed configuration file"
-        elif [ -f "$HOME_DIR/klipper_config/polar_cloud.conf" ]; then
-            rm "$HOME_DIR/klipper_config/polar_cloud.conf"
-            print_success "Removed configuration file"
-        fi
+    
+    config_file=""
+    if [ -f "$HOME_DIR/printer_data/config/polar_cloud.conf" ]; then
+        config_file="$HOME_DIR/printer_data/config/polar_cloud.conf"
+    elif [ -f "$HOME_DIR/klipper_config/polar_cloud.conf" ]; then
+        config_file="$HOME_DIR/klipper_config/polar_cloud.conf"
+    fi
+    
+    if [ -n "$config_file" ]; then
+        case $REPLY in
+            1)
+                print_info "Configuration file preserved (will reconnect with existing registration)"
+                ;;
+            2)
+                # Remove just the serial number to force re-registration
+                sed -i '/^serial_number/d' "$config_file"
+                print_success "Removed registration info (will re-register on next install)"
+                ;;
+            3)
+                rm "$config_file"
+                print_success "Removed all configuration"
+                ;;
+            *)
+                print_info "Invalid option, keeping configuration file unchanged"
+                ;;
+        esac
     else
-        print_info "Configuration file preserved"
+        print_info "No configuration file found"
     fi
     
     # Remove nginx configuration
