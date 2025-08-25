@@ -77,6 +77,9 @@ class PolarCloudPlugin:
     async def _handle_status_request(self, web_request):
         """Handle status requests"""
         try:
+            # Reload config to get latest values (in case service updated it)
+            self.load_config()
+            
             # Check if service is running
             result = subprocess.run(
                 ["systemctl", "is-active", "polar_cloud.service"],
@@ -95,18 +98,22 @@ class PolarCloudPlugin:
             except Exception as e:
                 logging.debug(f"Could not read status file: {e}")
             
-            # Combine configuration and real-time status
+            # Get values from config and realtime status
+            serial_number = self.config.get('polar_cloud', 'serial_number', fallback='')
+            username = self.config.get('polar_cloud', 'username', fallback='')
+            
+            # Prefer realtime status if available, otherwise use config
             return {
                 "service_status": service_status,
                 "connected": realtime_status.get('connected', False),
-                "authenticated": realtime_status.get('authenticated', False),
-                "registered": bool(realtime_status.get('serial_number') or self.config.get('polar_cloud', 'serial_number', fallback='')),
-                "serial_number": realtime_status.get('serial_number') or self.config.get('polar_cloud', 'serial_number', fallback=''),
-                "username": realtime_status.get('username') or self.config.get('polar_cloud', 'username', fallback=''),
-                "machine_type": realtime_status.get('machine_type') or self.config.get('polar_cloud', 'machine_type', fallback='Cartesian'),
-                "printer_type": realtime_status.get('printer_type') or self.config.get('polar_cloud', 'printer_type', fallback='Cartesian'),
+                "authenticated": realtime_status.get('authenticated', bool(serial_number)),
+                "registered": bool(serial_number),
+                "serial_number": serial_number,
+                "username": username,
+                "machine_type": self.config.get('polar_cloud', 'machine_type', fallback='Cartesian'),
+                "printer_type": self.config.get('polar_cloud', 'printer_type', fallback='Cartesian'),
                 "last_update": realtime_status.get('last_update', ''),
-                "webcam_enabled": realtime_status.get('webcam_enabled', True)
+                "webcam_enabled": self.config.get('polar_cloud', 'webcam_enabled', fallback='true').lower() == 'true'
             }
         except Exception as e:
             logging.error(f"Error getting polar cloud status: {e}")

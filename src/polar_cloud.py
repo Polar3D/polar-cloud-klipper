@@ -306,14 +306,28 @@ class PolarCloudService:
         async def getUrlResponse(data):
             """Handle upload URL response"""
             try:
+                # According to Polar Cloud docs, response contains:
+                # status, serialNumber, type, expires, maxSize, contentType, url, fields
+                status = data.get("status")
                 upload_type = data.get("type")
-                url_data = data.get("url")
+                url = data.get("url")
+                fields = data.get("fields", {})
+                expires = data.get("expires")
+                max_size = data.get("maxSize")
+                content_type = data.get("contentType")
                 
-                if upload_type and url_data:
-                    self.upload_urls[upload_type] = url_data
-                    logger.debug(f"Received upload URL for type: {upload_type}")
+                if status == "SUCCESS" and upload_type and url:
+                    # Store the complete upload information
+                    self.upload_urls[upload_type] = {
+                        'url': url,
+                        'fields': fields,
+                        'expires': expires,
+                        'maxSize': max_size,
+                        'contentType': content_type
+                    }
+                    logger.debug(f"Received upload URL for type: {upload_type}, expires in {expires}s")
                 else:
-                    logger.warning(f"Invalid upload URL response: {data}")
+                    logger.warning(f"Invalid or failed upload URL response: {data}")
             except Exception as e:
                 logger.error(f"Error handling upload URL response: {e}")
         
@@ -699,12 +713,25 @@ class PolarCloudService:
             
             url_data = self.upload_urls[upload_type]
             
+            # Check if URL has expired (with 30 second buffer)
+            if url_data.get('expires'):
+                # expires is in seconds from when URL was received
+                # We need to track when we received it
+                # For now, request a new URL if we don't have fields (indicates old format)
+                if not url_data.get('fields'):
+                    logger.info(f"Upload URL for {upload_type} may be expired, requesting new one")
+                    if await self.request_upload_url(upload_type):
+                        url_data = self.upload_urls[upload_type]
+                    else:
+                        return False
+            
             # Resize image if needed
             resized_image = await self.resize_image(image_data)
             
-            # Upload using pre-signed POST
-            files = {'file': ('image.jpg', resized_image, 'image/jpeg')}
+            # Upload using pre-signed POST with fields first, then file
+            # According to AWS S3 docs, fields must come before file in multipart POST
             data = url_data.get('fields', {})
+            files = {'file': ('image.jpg', resized_image, 'image/jpeg')}
             
             response = requests.post(url_data['url'], data=data, files=files, timeout=30)
             

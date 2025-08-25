@@ -448,9 +448,43 @@ EOF
         sudo cp "$nginx_conf" "${nginx_conf}.backup.$(date +%Y%m%d_%H%M%S)"
         print_info "Created backup of nginx configuration"
         
+        # Check if /server location exists for Moonraker
+        local needs_server_proxy=false
+        if ! grep -q "location.*/server" "$nginx_conf"; then
+            needs_server_proxy=true
+            print_warning "Nginx missing /server proxy for Moonraker API"
+        fi
+        
         # Prepare the nginx snippet with actual path
         local nginx_snippet=""
-        nginx_snippet=$(cat << EOF
+        if [ "$needs_server_proxy" = true ]; then
+            nginx_snippet=$(cat << EOF
+
+# Moonraker API proxy (required for Polar Cloud)
+# Automatically added by Polar Cloud installer on $(date)
+location /server {
+    proxy_pass http://127.0.0.1:7125/server;
+    proxy_set_header Host \$http_host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Scheme \$scheme;
+}
+
+# Polar Cloud nginx configuration snippet
+
+# Redirect /polar-cloud to /polar-cloud/ for user-friendliness
+location = /polar-cloud {
+    return 301 \$scheme://\$host/polar-cloud/;
+}
+
+location /polar-cloud/ {
+    alias $POLAR_DIR/web/;
+    try_files \$uri \$uri/ /polar-cloud/index.html;
+}
+EOF
+)
+        else
+            nginx_snippet=$(cat << EOF
 
 # Polar Cloud nginx configuration snippet
 # Automatically added by Polar Cloud installer on $(date)
@@ -466,6 +500,7 @@ location /polar-cloud/ {
 }
 EOF
 )
+        fi
         
         # Add the configuration to the nginx file
         # We need to insert it before the last closing brace of the server block
