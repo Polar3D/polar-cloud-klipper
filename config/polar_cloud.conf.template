@@ -36,7 +36,20 @@ printer_type = Cartesian
 max_image_size = 150000
 # Set to false if you don't have a webcam configured
 webcam_enabled = true
-# Note: Webcam flip/rotation settings are automatically read from your Mainsail webcam configuration
+
+# Webcam transformation settings
+# These are automatically detected from Mainsail, Fluidd, or other frontends
+# Uncomment and set manually only if automatic detection doesn't work
+# flip_horizontal = false
+# flip_vertical = false  
+# rotation = 0
+
+# Note: Polar Cloud automatically tries to read webcam settings from:
+# 1. Manual configuration above (if uncommented)
+# 2. Mainsail webcam database
+# 3. Fluidd webcam database
+# 4. Legacy Mainsail format
+# If none found, defaults to no transformations
 
 # Debug Settings
 verbose = false
