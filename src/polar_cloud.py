@@ -636,17 +636,90 @@ class PolarCloudService:
             logger.warning(f"Unexpected error capturing webcam image: {e}")
             return None
     
+    async def get_mainsail_webcam_settings(self):
+        """Get webcam transformation settings from Mainsail via Moonraker"""
+        try:
+            # Get webcam configuration from Moonraker database
+            response = requests.get(f"{self.moonraker_url}/server/database/item?namespace=mainsail&key=webcam", timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                webcam_config = data.get('result', {}).get('value', {})
+                
+                # Extract transformation settings for the first webcam
+                if 'cameras' in webcam_config and webcam_config['cameras']:
+                    camera = webcam_config['cameras'][0]  # Use first camera
+                    return {
+                        'flip_horizontal': camera.get('flipX', False),
+                        'flip_vertical': camera.get('flipY', False),
+                        'rotation': camera.get('rotation', 0)
+                    }
+            
+            # Fallback: try to get from webcam database directly
+            response = requests.get(f"{self.moonraker_url}/server/database/item?namespace=webcams&key=cameras", timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                cameras = data.get('result', {}).get('value', [])
+                if cameras:
+                    camera = cameras[0]  # Use first camera
+                    return {
+                        'flip_horizontal': camera.get('flip_horizontal', False),
+                        'flip_vertical': camera.get('flip_vertical', False),  
+                        'rotation': camera.get('rotation', 0)
+                    }
+                    
+        except Exception as e:
+            logger.debug(f"Could not get Mainsail webcam settings: {e}")
+        
+        # Return defaults if we can't get settings
+        return {
+            'flip_horizontal': False,
+            'flip_vertical': False,
+            'rotation': 0
+        }
+
     async def resize_image(self, image_data, max_size=None):
-        """Resize image to fit within max_size bytes"""
+        """Resize and transform image to fit within max_size bytes"""
         try:
             if not max_size:
                 max_size = int(self.config.get('polar_cloud', 'max_image_size', fallback='150000'))
             
-            if len(image_data) <= max_size:
-                return image_data
-            
-            # Open image and resize
+            # Open image
             image = Image.open(io.BytesIO(image_data))
+            
+            # Convert to RGB if necessary
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            
+            # Get transformation settings from Mainsail webcam configuration
+            webcam_settings = await self.get_mainsail_webcam_settings()
+            flip_horizontal = webcam_settings['flip_horizontal']
+            flip_vertical = webcam_settings['flip_vertical']
+            rotation = webcam_settings['rotation']
+            
+            # Apply horizontal flip (mirror)
+            if flip_horizontal:
+                image = image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+            
+            # Apply vertical flip
+            if flip_vertical:
+                image = image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+            
+            # Apply rotation
+            if rotation == 90:
+                image = image.transpose(Image.Transpose.ROTATE_90)
+            elif rotation == 180:
+                image = image.transpose(Image.Transpose.ROTATE_180)
+            elif rotation == 270:
+                image = image.transpose(Image.Transpose.ROTATE_270)
+            elif rotation != 0:
+                logger.warning(f"Invalid rotation value: {rotation}. Use 0, 90, 180, or 270.")
+            
+            # Check size after transformations
+            output = io.BytesIO()
+            image.save(output, format='JPEG', quality=95, optimize=True)
+            if output.tell() <= max_size:
+                output.seek(0)
+                return output.read()
             
             # Start with 80% quality and reduce until size is acceptable
             for quality in range(80, 10, -10):
@@ -677,7 +750,7 @@ class PolarCloudService:
             return image_data[:max_size]  # Truncate as last resort
             
         except Exception as e:
-            logger.error(f"Error resizing image: {e}")
+            logger.error(f"Error resizing/transforming image: {e}")
             return image_data
     
     async def request_upload_url(self, upload_type, job_id=None):
