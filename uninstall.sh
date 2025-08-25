@@ -65,7 +65,7 @@ uninstall() {
     fi
     
     if [ -z "$USER" ]; then
-        for test_user in pi klipper ubuntu debian; do
+        for test_user in pi mks klipper ubuntu debian; do
             if id "$test_user" &>/dev/null; then
                 USER="$test_user"
                 break
@@ -115,6 +115,60 @@ uninstall() {
         print_info "Configuration file preserved"
     fi
     
+    # Remove nginx configuration
+    print_info "Cleaning up nginx configuration..."
+    
+    # Check for standalone Polar Cloud nginx config first
+    if [ -f "/etc/nginx/sites-enabled/polar-cloud" ]; then
+        sudo rm -f /etc/nginx/sites-enabled/polar-cloud
+        sudo rm -f /etc/nginx/sites-available/polar-cloud
+        print_success "Removed standalone Polar Cloud nginx configuration"
+    else
+        # Check common nginx configs for Polar Cloud entries
+        local nginx_configs=(
+            "/etc/nginx/sites-available/mainsail"
+            "/etc/nginx/sites-available/fluidd"
+            "/etc/nginx/conf.d/mainsail.conf"
+            "/etc/nginx/conf.d/fluidd.conf"
+            "/etc/nginx/sites-enabled/mainsail"
+            "/etc/nginx/sites-enabled/fluidd"
+        )
+        
+        local cleaned=false
+        for conf in "${nginx_configs[@]}"; do
+            if [ -f "$conf" ] && grep -q "location.*polar-cloud" "$conf"; then
+                # Create backup
+                sudo cp "$conf" "${conf}.backup.before_polar_removal.$(date +%Y%m%d_%H%M%S)"
+                
+                # Remove Polar Cloud configuration block
+                sudo sed -i '/# Polar Cloud nginx configuration snippet/,/^[[:space:]]*}[[:space:]]*$/d' "$conf" 2>/dev/null || true
+                sudo sed -i '/location.*polar-cloud/,/^[[:space:]]*}[[:space:]]*$/d' "$conf" 2>/dev/null || true
+                
+                if ! grep -q "location.*polar-cloud" "$conf"; then
+                    print_success "Removed Polar Cloud configuration from $conf"
+                    cleaned=true
+                else
+                    print_warning "Could not fully remove Polar Cloud config from $conf"
+                fi
+                break
+            fi
+        done
+        
+        if [ "$cleaned" = false ]; then
+            print_info "No nginx configuration changes needed"
+        fi
+    fi
+    
+    # Test and reload nginx if it's running
+    if systemctl is-active --quiet nginx; then
+        if sudo nginx -t 2>/dev/null; then
+            sudo systemctl reload nginx
+            print_success "Nginx configuration reloaded"
+        else
+            print_error "Nginx configuration test failed - check your nginx config"
+        fi
+    fi
+    
     # Restart Moonraker
     if systemctl is-active --quiet moonraker; then
         print_info "Restarting Moonraker..."
@@ -125,9 +179,6 @@ uninstall() {
     print_info ""
     print_success "Polar Cloud integration has been removed."
     print_info ""
-    print_warning "Note: nginx configuration was not modified."
-    print_info "You may want to manually remove the /polar-cloud/ location block"
-    print_info "from your nginx configuration if desired."
 }
 
 # Check if running as root
