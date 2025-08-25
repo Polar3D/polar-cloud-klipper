@@ -659,23 +659,22 @@
                 showMessage('Generating diagnostic logs, please wait...', 'success');
                 
                 const response = await fetch(`${API_BASE}/export_logs`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
                 
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
                 
-                // Get the filename from the response headers if available
-                const contentDisposition = response.headers.get('Content-Disposition');
-                let filename = 'polar_cloud_logs.txt';
-                if (contentDisposition) {
-                    const matches = contentDisposition.match(/filename="(.+)"/);
-                    if (matches) {
-                        filename = matches[1];
-                    }
-                }
+                // Get log content and filename from the response
+                const logContent = data.result.logs;
+                const filename = data.result.filename || 'polar_cloud_logs.txt';
                 
                 // Create blob and download
-                const blob = await response.blob();
+                const blob = new Blob([logContent], { type: 'text/plain' });
                 const url = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
