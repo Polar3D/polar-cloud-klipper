@@ -335,9 +335,9 @@ class PolarCloudPlugin:
             logs.append("")
             
             # 6. Recent Service Logs
-            logs.append("=== RECENT SERVICE LOGS (Last 50 lines) ===")
+            logs.append("=== RECENT SERVICE LOGS (Last 200 lines) ===")
             try:
-                result = subprocess.run(['journalctl', '-u', 'polar_cloud', '-n', '50', '--no-pager'], 
+                result = subprocess.run(['journalctl', '-u', 'polar_cloud', '-n', '200', '--no-pager'], 
                                       capture_output=True, text=True, timeout=15)
                 if result.returncode == 0:
                     logs.append(result.stdout)
@@ -374,15 +374,12 @@ class PolarCloudPlugin:
             # Create response with proper headers for file download
             filename = f"polar_cloud_logs_{hostname}_{timestamp}.txt"
             
-            # Return as downloadable file
-            from aiohttp.web import Response
-            return Response(
-                body=log_content.encode('utf-8'),
-                headers={
-                    'Content-Type': 'text/plain',
-                    'Content-Disposition': f'attachment; filename="{filename}"'
-                }
-            )
+            # Return logs as text data for download - Moonraker will handle the file response
+            return {
+                'logs': log_content,
+                'filename': filename,
+                'content_type': 'text/plain'
+            }
             
         except Exception as e:
             logging.error(f"Error generating logs export: {e}")
