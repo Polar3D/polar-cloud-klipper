@@ -499,10 +499,24 @@ EOF
             local last_brace_line=$(grep -n '^}$' "$nginx_conf" | tail -1 | cut -d: -f1)
             
             if [ -n "$last_brace_line" ]; then
-                # Insert before the last closing brace
-                sudo sed -i "${last_brace_line}i\\
-$nginx_snippet" "$nginx_conf"
-                print_success "Added Polar Cloud configuration to nginx (using fallback method)"
+                # Insert before the last closing brace using a more robust method
+                # Create a new file with the insertion
+                local temp_conf="/tmp/nginx_conf_temp.$$"
+                head -n $((last_brace_line - 1)) "$nginx_conf" | sudo tee "$temp_conf" > /dev/null
+                echo "$nginx_snippet" | sudo tee -a "$temp_conf" > /dev/null
+                tail -n +$last_brace_line "$nginx_conf" | sudo tee -a "$temp_conf" > /dev/null
+                
+                # Replace the original file
+                sudo mv "$temp_conf" "$nginx_conf"
+                
+                if grep -q "location.*polar-cloud" "$nginx_conf"; then
+                    print_success "Added Polar Cloud configuration to nginx"
+                else
+                    print_error "Failed to add nginx configuration automatically"
+                    print_info "Please manually add the following to your nginx configuration:"
+                    echo "$nginx_snippet"
+                    return 1
+                fi
             else
                 print_error "Could not automatically add nginx configuration"
                 print_info "Please manually add the following to your nginx configuration:"
@@ -587,17 +601,52 @@ main() {
         exit 1
     fi
     
-    detect_user
-    detect_klipper
-    detect_moonraker
-    check_dependencies
-    create_directories
-    install_venv
-    install_files
-    install_service
-    configure_moonraker
-    configure_nginx
-    start_services
+    # Track installation status
+    local install_failed=false
+    local nginx_configured=true
+    
+    # Run installation steps
+    detect_user || { print_error "Failed to detect user"; exit 1; }
+    detect_klipper || { print_error "Failed to detect Klipper"; exit 1; }
+    detect_moonraker || { print_error "Failed to detect Moonraker"; exit 1; }
+    check_dependencies || { print_error "Failed to install dependencies"; exit 1; }
+    create_directories || { print_error "Failed to create directories"; exit 1; }
+    install_venv || { print_error "Failed to install Python environment"; exit 1; }
+    install_files || { print_error "Failed to install files"; exit 1; }
+    install_service || { print_error "Failed to install service"; exit 1; }
+    configure_moonraker || { print_error "Failed to configure Moonraker"; exit 1; }
+    
+    # Nginx configuration might fail but shouldn't stop the installation
+    if ! configure_nginx; then
+        nginx_configured=false
+        print_warning "Nginx configuration was not completed automatically"
+    fi
+    
+    start_services || { install_failed=true; print_error "Failed to start services"; }
+    
+    # Print final status
+    echo ""
+    print_header
+    
+    if [ "$install_failed" = true ]; then
+        print_error "Installation completed with errors!"
+        echo ""
+        print_warning "Some services may not have started correctly."
+        print_info "Check the service status with:"
+        echo "  sudo systemctl status polar_cloud"
+        echo "  sudo journalctl -u polar_cloud -f"
+    else
+        print_success "🎉 Polar Cloud installation completed successfully!"
+        echo ""
+        
+        if [ "$nginx_configured" = false ]; then
+            print_warning "Note: Nginx configuration requires manual setup"
+            print_info "The Polar Cloud service is running, but web access needs configuration"
+        else
+            print_success "✅ All components installed and configured"
+        fi
+    fi
+    
     print_instructions
 }
 
