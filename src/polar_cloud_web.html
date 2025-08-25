@@ -464,6 +464,13 @@
             try {
                 showLoading(true);
                 const response = await fetch(`${API_BASE}/status`);
+                
+                // Check if response is HTML instead of JSON
+                const contentType = response.headers.get("content-type");
+                if (!contentType || !contentType.includes("application/json")) {
+                    throw new Error("Server configuration error: Moonraker API not accessible. Please check nginx configuration.");
+                }
+                
                 const data = await response.json();
                 
                 if (data.error) {
@@ -475,7 +482,14 @@
                 
             } catch (error) {
                 console.error('Error loading status:', error);
-                showMessage('Failed to load status: ' + error.message, 'error');
+                // Provide more helpful error messages
+                if (error.message && error.message.includes('Unexpected token')) {
+                    showMessage('Configuration error: nginx is not properly routing /server/ to Moonraker. Please check your nginx configuration.', 'error');
+                } else if (error.message && error.message.includes('Server configuration error')) {
+                    showMessage(error.message, 'error');
+                } else {
+                    showMessage('Failed to load status: ' + error.message, 'error');
+                }
                 
                 // Set error state
                 serviceStatus.textContent = 'Error';
@@ -599,7 +613,12 @@
                 
             } catch (error) {
                 console.error('Error connecting:', error);
-                showMessage('Connection failed: ' + error.message, 'error');
+                // Check if this is a JSON parsing error from HTML response
+                if (error.message && error.message.includes('Unexpected token')) {
+                    showMessage('Configuration error: Web server not properly configured. Please ensure nginx is routing /server/ to Moonraker.', 'error');
+                } else {
+                    showMessage('Connection failed: ' + error.message, 'error');
+                }
             } finally {
                 showLoading(false);
             }
