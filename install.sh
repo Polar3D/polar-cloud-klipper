@@ -253,12 +253,13 @@ check_dependencies() {
 create_directories() {
     print_info "Creating Polar Cloud directories..."
     
-    POLAR_DIR="$HOME_DIR/polar-cloud"
+    # Use the git repository directory directly instead of copying files
+    POLAR_DIR="$HOME_DIR/polar-cloud-klipper"
     VENV_DIR="$POLAR_DIR/venv"
     
-    # Create directories as the target user
+    # Create web directory in the git repo if it doesn't exist
     sudo -u "$USER" mkdir -p "$POLAR_DIR/web"
-    print_success "Created directory: $POLAR_DIR"
+    print_success "Using git repository directory: $POLAR_DIR"
 }
 
 # Install Python virtual environment
@@ -285,15 +286,14 @@ install_venv() {
 install_files() {
     print_info "Installing Polar Cloud files..."
     
-    # Copy main service file
-    sudo -u "$USER" cp "$SCRIPT_DIR/src/polar_cloud.py" "$POLAR_DIR/"
-    print_success "Installed main service"
+    # Main service file stays in git repo (no copying needed)
+    print_success "Main service will run from git repository"
     
     # Copy Moonraker plugin
     sudo cp "$SCRIPT_DIR/src/polar_cloud_moonraker.py" "$MOONRAKER_COMPONENTS/polar_cloud.py"
     print_success "Installed Moonraker plugin"
     
-    # Copy web interface
+    # Copy web interface to web directory in git repo
     sudo -u "$USER" cp "$SCRIPT_DIR/src/polar_cloud_web.html" "$POLAR_DIR/web/index.html"
     print_success "Installed web interface"
     

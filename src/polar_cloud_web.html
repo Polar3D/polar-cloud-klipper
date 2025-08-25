@@ -314,6 +314,18 @@
                     <span class="status-label">Serial Number:</span>
                     <span class="status-value" id="serial-display">Loading...</span>
                 </div>
+                <div class="status-item">
+                    <span class="status-label">Software Version:</span>
+                    <span class="status-value" id="version-display">Loading...</span>
+                </div>
+                <div class="status-item" id="update-item" style="display: none;">
+                    <span class="status-label">Update Available:</span>
+                    <span class="status-value">
+                        <button id="update-button" class="btn btn-primary" onclick="performUpdate()">
+                            Update to <span id="latest-version"></span>
+                        </button>
+                    </span>
+                </div>
             </div>
         </div>
 
@@ -531,6 +543,25 @@
             // User info
             usernameDisplay.textContent = currentStatus.username || 'Not set';
             serialDisplay.textContent = currentStatus.serial_number || 'Not registered';
+            
+            // Version info
+            if (currentStatus.version_info) {
+                const versionInfo = currentStatus.version_info;
+                document.getElementById('version-display').textContent = versionInfo.running_version || 'Unknown';
+                
+                // Check if update is available
+                if (versionInfo.latest_version && 
+                    versionInfo.latest_version !== versionInfo.running_version &&
+                    versionInfo.latest_version > versionInfo.running_version) {
+                    document.getElementById('latest-version').textContent = versionInfo.latest_version;
+                    document.getElementById('update-item').style.display = 'block';
+                } else {
+                    document.getElementById('update-item').style.display = 'none';
+                }
+            } else {
+                document.getElementById('version-display').textContent = 'Unknown';
+                document.getElementById('update-item').style.display = 'none';
+            }
             
             // Form - prefer server values over localStorage for registered users
             if (currentStatus.username && (!usernameInput.value || currentStatus.username !== usernameInput.value)) {
@@ -787,6 +818,47 @@
 
         function handleMachineTypeChange() {
             loadPrinterTypes();
+        }
+        
+        async function performUpdate() {
+            const updateButton = document.getElementById('update-button');
+            const originalText = updateButton.innerHTML;
+            
+            // Disable button and show progress
+            updateButton.disabled = true;
+            updateButton.innerHTML = 'Updating...';
+            
+            try {
+                const response = await fetch('/server/polar_cloud/update', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    updateButton.innerHTML = 'Update Started!';
+                    showMessage('Update initiated successfully. The service will restart automatically.', 'success');
+                    
+                    // Hide update button after success
+                    document.getElementById('update-item').style.display = 'none';
+                    
+                    // Refresh status after a delay
+                    setTimeout(() => {
+                        loadStatus();
+                    }, 10000);
+                } else {
+                    updateButton.innerHTML = originalText;
+                    updateButton.disabled = false;
+                    showMessage(result.error || 'Update failed', 'error');
+                }
+            } catch (error) {
+                updateButton.innerHTML = originalText;
+                updateButton.disabled = false;
+                showMessage('Network error during update: ' + error.message, 'error');
+            }
         }
     </script>
 </body>

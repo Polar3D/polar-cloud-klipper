@@ -40,6 +40,10 @@ class PolarCloudPlugin:
             "/server/polar_cloud/export_logs", ["GET"],
             self._handle_export_logs_request
         )
+        self.server.register_endpoint(
+            "/server/polar_cloud/update", ["POST"],
+            self._handle_update_request
+        )
         
         logging.info("Polar Cloud plugin loaded successfully")
 
@@ -102,6 +106,9 @@ class PolarCloudPlugin:
             serial_number = self.config.get('polar_cloud', 'serial_number', fallback='')
             username = self.config.get('polar_cloud', 'username', fallback='')
             
+            # Get version information
+            version_info = self._get_version_info()
+            
             # Prefer realtime status if available, otherwise use config
             return {
                 "service_status": service_status,
@@ -113,7 +120,8 @@ class PolarCloudPlugin:
                 "machine_type": self.config.get('polar_cloud', 'machine_type', fallback='Cartesian'),
                 "printer_type": self.config.get('polar_cloud', 'printer_type', fallback='Cartesian'),
                 "last_update": realtime_status.get('last_update', ''),
-                "webcam_enabled": self.config.get('polar_cloud', 'webcam_enabled', fallback='true').lower() == 'true'
+                "webcam_enabled": self.config.get('polar_cloud', 'webcam_enabled', fallback='true').lower() == 'true',
+                "version_info": version_info
             }
         except Exception as e:
             logging.error(f"Error getting polar cloud status: {e}")
@@ -384,6 +392,93 @@ class PolarCloudPlugin:
         except Exception as e:
             logging.error(f"Error generating logs export: {e}")
             return {"error": f"Failed to export logs: {str(e)}"}
+
+    def _get_version_info(self):
+        """Get version information from git"""
+        try:
+            import subprocess
+            
+            # Get current version from git tags
+            result = subprocess.run(
+                ["git", "describe", "--tags", "--abbrev=0"],
+                cwd=os.path.expanduser("~/polar-cloud-klipper"),
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode == 0:
+                current_version = result.stdout.strip()
+                if current_version.startswith('v'):
+                    current_version = current_version[1:]
+            else:
+                # Fallback to commit hash
+                result = subprocess.run(
+                    ["git", "rev-parse", "--short", "HEAD"],
+                    cwd=os.path.expanduser("~/polar-cloud-klipper"),
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                current_version = f"dev-{result.stdout.strip()}" if result.returncode == 0 else "unknown"
+            
+            # Check for latest version from GitHub
+            latest_version = None
+            try:
+                import requests
+                response = requests.get(
+                    "https://api.github.com/repos/vanmorris/polar-cloud-klipper/releases/latest",
+                    timeout=5
+                )
+                if response.status_code == 200:
+                    release_data = response.json()
+                    latest_tag = release_data.get("tag_name", "")
+                    if latest_tag.startswith('v'):
+                        latest_tag = latest_tag[1:]
+                    latest_version = latest_tag
+            except:
+                pass  # Ignore errors when checking latest version
+            
+            return {
+                "running_version": current_version,
+                "latest_version": latest_version
+            }
+            
+        except Exception as e:
+            logging.error(f"Error getting version info: {e}")
+            return {
+                "running_version": "unknown",
+                "latest_version": None
+            }
+
+    async def _handle_update_request(self, web_request):
+        """Handle update requests"""
+        try:
+            import subprocess
+            
+            logging.info("Starting software update via web interface")
+            
+            # Run git pull and restart service
+            result = subprocess.run([
+                "bash", "-c", 
+                "cd ~/polar-cloud-klipper && git pull && sudo systemctl restart polar_cloud"
+            ], capture_output=True, text=True, timeout=60)
+            
+            if result.returncode == 0:
+                return {
+                    "success": True, 
+                    "message": "Update initiated successfully",
+                    "output": result.stdout
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Update failed: {result.stderr}"
+                }
+                
+        except Exception as e:
+            logging.error(f"Error handling update request: {e}")
+            return {"success": False, "error": str(e)}
 
 def load_component(config):
     return PolarCloudPlugin(config) 
