@@ -102,8 +102,8 @@ uninstall() {
     # Ask about configuration file and registration
     print_warning "Configuration file contains your Polar Cloud credentials and registration."
     echo "Choose an option:"
-    echo "1) Keep configuration and registration (reconnect with same serial number)"
-    echo "2) Keep credentials but force re-registration (get new serial number)" 
+    echo "1) Keep configuration and registration (quick reconnect)"
+    echo "2) Keep credentials but clear registration (show registration process)" 
     echo "3) Remove all configuration and credentials"
     read -p "Select option (1/2/3): " -n 1 -r
     echo
@@ -118,12 +118,13 @@ uninstall() {
     if [ -n "$config_file" ]; then
         case $REPLY in
             1)
-                print_info "Configuration file preserved (will reconnect with existing registration)"
+                print_info "Configuration file preserved (will reconnect immediately)"
                 ;;
             2)
                 # Remove just the serial number to force re-registration
+                # Note: Same MAC address will get same serial number from Polar Cloud
                 sed -i '/^serial_number/d' "$config_file"
-                print_success "Removed registration info (will re-register on next install)"
+                print_success "Cleared registration info (will re-register with same serial number)"
                 ;;
             3)
                 rm "$config_file"
