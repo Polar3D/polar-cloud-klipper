@@ -640,31 +640,17 @@ class PolarCloudService:
         """Get webcam transformation settings from Mainsail via Moonraker"""
         try:
             # Get webcam configuration from Moonraker database
-            response = requests.get(f"{self.moonraker_url}/server/database/item?namespace=mainsail&key=webcam", timeout=5)
+            response = requests.get(f"{self.moonraker_url}/server/database/item?namespace=webcams", timeout=5)
             if response.status_code == 200:
                 data = response.json()
                 webcam_config = data.get('result', {}).get('value', {})
                 
-                # Extract transformation settings for the first webcam
-                if 'cameras' in webcam_config and webcam_config['cameras']:
-                    camera = webcam_config['cameras'][0]  # Use first camera
+                # Get the first webcam (there should be at least one)
+                for camera_id, camera_data in webcam_config.items():
                     return {
-                        'flip_horizontal': camera.get('flipX', False),
-                        'flip_vertical': camera.get('flipY', False),
-                        'rotation': camera.get('rotation', 0)
-                    }
-            
-            # Fallback: try to get from webcam database directly
-            response = requests.get(f"{self.moonraker_url}/server/database/item?namespace=webcams&key=cameras", timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                cameras = data.get('result', {}).get('value', [])
-                if cameras:
-                    camera = cameras[0]  # Use first camera
-                    return {
-                        'flip_horizontal': camera.get('flip_horizontal', False),
-                        'flip_vertical': camera.get('flip_vertical', False),  
-                        'rotation': camera.get('rotation', 0)
+                        'flip_horizontal': camera_data.get('flipX', False),
+                        'flip_vertical': camera_data.get('flipY', False),
+                        'rotation': camera_data.get('rotate', 0)  # Note: 'rotate' not 'rotation'
                     }
                     
         except Exception as e:
@@ -905,6 +891,9 @@ class PolarCloudService:
             # Check if webcam is enabled
             webcam_enabled = self.config.get('polar_cloud', 'webcam_enabled', fallback='true').lower() == 'true'
             
+            # Get webcam transformation settings to inform the web browser
+            webcam_settings = await self.get_mainsail_webcam_settings()
+            
             hello_data = {
                 "serialNumber": self.serial_number,
                 "protocol": "2",
@@ -920,7 +909,11 @@ class PolarCloudService:
                 "mfgSn": "MNSL-" + self.get_mac_address().replace(":", ""),  # Add manufacturer serial
                 "printerMake": self.config.get('polar_cloud', 'printer_type', fallback='Cartesian'),  # Use actual printer type
                 "version": "1.0.0",
-                "camOff": 0 if webcam_enabled else 1  # 0=camera on, 1=camera off
+                "camOff": 0 if webcam_enabled else 1,  # 0=camera on, 1=camera off
+                # These fields tell web browsers if they need to transform the live stream
+                # (uploaded images are pre-transformed by the printer)
+                "rotateImg": 1 if webcam_settings.get('rotation', 0) != 0 else 0,
+                "transformImg": 1 if (webcam_settings.get('flip_horizontal', False) or webcam_settings.get('flip_vertical', False)) else 0
             }
             
             await self.sio.emit("hello", hello_data)
