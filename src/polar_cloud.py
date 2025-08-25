@@ -636,10 +636,23 @@ class PolarCloudService:
             logger.warning(f"Unexpected error capturing webcam image: {e}")
             return None
     
-    async def get_mainsail_webcam_settings(self):
-        """Get webcam transformation settings from Mainsail via Moonraker"""
+    async def get_webcam_settings(self):
+        """Get webcam transformation settings from frontend or config"""
         try:
-            # Get webcam configuration from Moonraker database
+            # First, check for manual config overrides
+            manual_flip_h = self.config.get('polar_cloud', 'flip_horizontal', fallback=None)
+            manual_flip_v = self.config.get('polar_cloud', 'flip_vertical', fallback=None)
+            manual_rotation = self.config.get('polar_cloud', 'rotation', fallback=None)
+            
+            if manual_flip_h is not None or manual_flip_v is not None or manual_rotation is not None:
+                logger.info("Using manual webcam configuration from polar_cloud.conf")
+                return {
+                    'flip_horizontal': manual_flip_h and manual_flip_h.lower() == 'true',
+                    'flip_vertical': manual_flip_v and manual_flip_v.lower() == 'true',
+                    'rotation': int(manual_rotation) if manual_rotation else 0
+                }
+            
+            # Try Mainsail/modern webcam database format
             response = requests.get(f"{self.moonraker_url}/server/database/item?namespace=webcams", timeout=5)
             if response.status_code == 200:
                 data = response.json()
@@ -647,16 +660,46 @@ class PolarCloudService:
                 
                 # Get the first webcam (there should be at least one)
                 for camera_id, camera_data in webcam_config.items():
+                    logger.info(f"Using webcam settings from Mainsail/modern frontend")
                     return {
                         'flip_horizontal': camera_data.get('flipX', False),
                         'flip_vertical': camera_data.get('flipY', False),
-                        'rotation': camera_data.get('rotate', 0)  # Note: 'rotate' not 'rotation'
+                        'rotation': camera_data.get('rotate', 0)
+                    }
+            
+            # Try Fluidd database format
+            response = requests.get(f"{self.moonraker_url}/server/database/item?namespace=fluidd&key=cameras", timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                cameras = data.get('result', {}).get('value', [])
+                if cameras:
+                    camera = cameras[0]  # Use first camera
+                    logger.info(f"Using webcam settings from Fluidd")
+                    return {
+                        'flip_horizontal': camera.get('flipX', camera.get('flip_horizontal', False)),
+                        'flip_vertical': camera.get('flipY', camera.get('flip_vertical', False)),
+                        'rotation': camera.get('rotation', camera.get('rotate', 0))
+                    }
+            
+            # Try legacy Mainsail format
+            response = requests.get(f"{self.moonraker_url}/server/database/item?namespace=mainsail&key=webcam", timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                webcam_config = data.get('result', {}).get('value', {})
+                
+                if 'cameras' in webcam_config and webcam_config['cameras']:
+                    camera = webcam_config['cameras'][0]
+                    logger.info(f"Using webcam settings from legacy Mainsail")
+                    return {
+                        'flip_horizontal': camera.get('flipX', False),
+                        'flip_vertical': camera.get('flipY', False),
+                        'rotation': camera.get('rotation', 0)
                     }
                     
         except Exception as e:
-            logger.debug(f"Could not get Mainsail webcam settings: {e}")
+            logger.debug(f"Could not get frontend webcam settings: {e}")
         
-        # Return defaults if we can't get settings
+        logger.info("No webcam transformation settings found, using defaults")
         return {
             'flip_horizontal': False,
             'flip_vertical': False,
@@ -676,8 +719,8 @@ class PolarCloudService:
             if image.mode != 'RGB':
                 image = image.convert('RGB')
             
-            # Get transformation settings from Mainsail webcam configuration
-            webcam_settings = await self.get_mainsail_webcam_settings()
+            # Get transformation settings from frontend or manual configuration
+            webcam_settings = await self.get_webcam_settings()
             flip_horizontal = webcam_settings['flip_horizontal']
             flip_vertical = webcam_settings['flip_vertical']
             rotation = webcam_settings['rotation']
@@ -892,7 +935,7 @@ class PolarCloudService:
             webcam_enabled = self.config.get('polar_cloud', 'webcam_enabled', fallback='true').lower() == 'true'
             
             # Get webcam transformation settings to inform the web browser
-            webcam_settings = await self.get_mainsail_webcam_settings()
+            webcam_settings = await self.get_webcam_settings()
             
             hello_data = {
                 "serialNumber": self.serial_number,
