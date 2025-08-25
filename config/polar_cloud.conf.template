@@ -36,6 +36,7 @@ printer_type = Cartesian
 max_image_size = 150000
 # Set to false if you don't have a webcam configured
 webcam_enabled = true
+# Note: Webcam flip/rotation settings are automatically read from your Mainsail webcam configuration
 
 # Debug Settings
 verbose = false
