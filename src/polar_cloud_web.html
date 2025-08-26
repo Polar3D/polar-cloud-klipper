@@ -60,25 +60,38 @@
         .status-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
+            gap: 20px;
         }
 
         .status-item {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 10px 0;
+            padding: 12px 15px;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            transition: all 0.2s ease;
+        }
+
+        .status-item:hover {
+            background: rgba(255, 255, 255, 0.04);
+            border-color: rgba(255, 255, 255, 0.1);
         }
 
         .status-label {
-            color: #cccccc;
+            color: #999999;
             font-weight: 500;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
 
         .status-value {
             display: flex;
             align-items: center;
             gap: 8px;
+            font-weight: 600;
         }
 
         .status-dot {
@@ -266,6 +279,15 @@
 
             .header h1 {
                 font-size: 2rem;
+            }
+
+            .status-grid {
+                grid-template-columns: 1fr;
+                gap: 10px;
+            }
+
+            .status-item {
+                padding: 10px 12px;
             }
 
             .form-row {
