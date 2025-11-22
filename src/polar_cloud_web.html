@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -60,25 +61,38 @@
         .status-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
+            gap: 20px;
         }
 
         .status-item {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 10px 0;
+            padding: 12px 15px;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            transition: all 0.2s ease;
+        }
+
+        .status-item:hover {
+            background: rgba(255, 255, 255, 0.04);
+            border-color: rgba(255, 255, 255, 0.1);
         }
 
         .status-label {
-            color: #cccccc;
+            color: #999999;
             font-weight: 500;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
 
         .status-value {
             display: flex;
             align-items: center;
             gap: 8px;
+            font-weight: 600;
         }
 
         .status-dot {
@@ -128,7 +142,8 @@
             font-weight: 500;
         }
 
-        input, select {
+        input,
+        select {
             width: 100%;
             padding: 12px;
             background: rgba(255, 255, 255, 0.1);
@@ -139,7 +154,8 @@
             transition: all 0.3s ease;
         }
 
-        input:focus, select:focus {
+        input:focus,
+        select:focus {
             outline: none;
             border-color: #2196F3;
             box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.3);
@@ -268,6 +284,15 @@
                 font-size: 2rem;
             }
 
+            .status-grid {
+                grid-template-columns: 1fr;
+                gap: 10px;
+            }
+
+            .status-item {
+                padding: 10px 12px;
+            }
+
             .form-row {
                 grid-template-columns: 1fr;
             }
@@ -278,6 +303,7 @@
         }
     </style>
 </head>
+
 <body>
     <div class="container">
         <div class="navigation">
@@ -331,7 +357,7 @@
 
         <div class="form-section">
             <h3 style="margin-bottom: 20px; color: #ffffff;">Configuration</h3>
-            
+
             <div class="form-group">
                 <div class="form-row">
                     <div>
@@ -343,7 +369,7 @@
                         <input type="password" id="pin" placeholder="Your Polar Cloud PIN" required>
                     </div>
                 </div>
-                
+
                 <div class="form-row">
                     <div>
                         <label for="machine-type">Machine Type</label>
@@ -388,7 +414,7 @@
 
     <script>
         const API_BASE = '/server/polar_cloud';
-        
+
         // State
         let currentStatus = {};
 
@@ -399,12 +425,12 @@
         const registrationStatus = document.getElementById('registration-status');
         const usernameDisplay = document.getElementById('username-display');
         const serialDisplay = document.getElementById('serial-display');
-        
+
         const usernameInput = document.getElementById('username');
         const pinInput = document.getElementById('pin');
         const machineTypeSelect = document.getElementById('machine-type');
         const printerTypeSelect = document.getElementById('printer-type');
-        
+
         const connectBtn = document.getElementById('connect-btn');
         const disconnectBtn = document.getElementById('disconnect-btn');
         const refreshBtn = document.getElementById('refresh-btn');
@@ -418,7 +444,7 @@
         refreshBtn.addEventListener('click', loadStatus);
         exportLogsBtn.addEventListener('click', handleExportLogs);
         machineTypeSelect.addEventListener('change', handleMachineTypeChange);
-        
+
         // Save form values to localStorage when they change
         usernameInput.addEventListener('input', saveFormToStorage);
         pinInput.addEventListener('input', saveFormToStorage);
@@ -427,7 +453,7 @@
 
         // Initialize
         loadFormFromStorage(); // Load saved form values first
-        
+
         // Load printer types after form is restored, then load status
         if (machineTypeSelect.value) {
             loadPrinterTypes().then(() => {
@@ -439,7 +465,7 @@
             // No machine type selected yet, just load status
             loadStatus();
         }
-        
+
         function saveFormToStorage() {
             const formData = {
                 username: usernameInput.value,
@@ -449,19 +475,19 @@
             };
             localStorage.setItem('polar_cloud_form', JSON.stringify(formData));
         }
-        
+
         function loadFormFromStorage() {
             try {
                 const savedData = localStorage.getItem('polar_cloud_form');
                 if (savedData) {
                     const formData = JSON.parse(savedData);
-                    
+
                     // Restore form values from localStorage
                     if (formData.username) usernameInput.value = formData.username;
                     if (formData.pin) pinInput.value = formData.pin;
                     if (formData.machine_type) machineTypeSelect.value = formData.machine_type;
                     // Note: printer_type will be set after loadPrinterTypes() completes
-                    
+
                     // Store the printer type to be set later
                     if (formData.printer_type) {
                         printerTypeSelect.dataset.savedValue = formData.printer_type;
@@ -476,22 +502,22 @@
             try {
                 showLoading(true);
                 const response = await fetch(`${API_BASE}/status`);
-                
+
                 // Check if response is HTML instead of JSON
                 const contentType = response.headers.get("content-type");
                 if (!contentType || !contentType.includes("application/json")) {
                     throw new Error("Server configuration error: Moonraker API not accessible. Please check nginx configuration.");
                 }
-                
+
                 const data = await response.json();
-                
+
                 if (data.error) {
                     throw new Error(data.error);
                 }
-                
+
                 currentStatus = data.result;
                 updateUI();
-                
+
             } catch (error) {
                 console.error('Error loading status:', error);
                 // Provide more helpful error messages
@@ -500,15 +526,25 @@
                 } else if (error.message && error.message.includes('Server configuration error')) {
                     showMessage(error.message, 'error');
                 } else {
-                    showMessage('Failed to load status: ' + error.message, 'error');
+                    // Try to extract meaningful message from error object if it's a JSON string
+                    let errorText = error.message;
+                    try {
+                        const errorObj = JSON.parse(error.message);
+                        if (errorObj && errorObj.error) {
+                            errorText = errorObj.error;
+                        }
+                    } catch (e) {
+                        // Not a JSON string, use as is
+                    }
+                    showMessage('Failed to load status: ' + errorText, 'error');
                 }
-                
+
                 // Set error state
                 serviceStatus.textContent = 'Error';
                 registrationStatus.textContent = 'Error';
                 usernameDisplay.textContent = 'Error';
                 serialDisplay.textContent = 'Error';
-                
+
             } finally {
                 showLoading(false);
             }
@@ -520,7 +556,7 @@
             const isConnected = currentStatus.connected === true;
             const isAuthenticated = currentStatus.authenticated === true;
             const isRegistered = currentStatus.registered;
-            
+
             // Service status - show connection state
             if (!isActive) {
                 serviceDot.className = 'status-dot inactive';
@@ -535,22 +571,22 @@
                 serviceDot.className = 'status-dot warning';
                 serviceStatus.textContent = 'Service Active (Not Connected)';
             }
-            
+
             // Registration status
             registrationDot.className = `status-dot ${isRegistered ? 'active' : (isActive ? 'warning' : 'inactive')}`;
             registrationStatus.textContent = isRegistered ? 'Registered' : 'Not Registered';
-            
+
             // User info
             usernameDisplay.textContent = currentStatus.username || 'Not set';
             serialDisplay.textContent = currentStatus.serial_number || 'Not registered';
-            
+
             // Version info
             if (currentStatus.version_info) {
                 const versionInfo = currentStatus.version_info;
                 document.getElementById('version-display').textContent = versionInfo.running_version || 'Unknown';
-                
+
                 // Check if update is available
-                if (versionInfo.latest_version && 
+                if (versionInfo.latest_version &&
                     versionInfo.latest_version !== versionInfo.running_version &&
                     versionInfo.latest_version > versionInfo.running_version) {
                     document.getElementById('latest-version').textContent = versionInfo.latest_version;
@@ -562,13 +598,13 @@
                 document.getElementById('version-display').textContent = 'Unknown';
                 document.getElementById('update-item').style.display = 'none';
             }
-            
+
             // Form - prefer server values over localStorage for registered users
             if (currentStatus.username && (!usernameInput.value || currentStatus.username !== usernameInput.value)) {
                 usernameInput.value = currentStatus.username;
             }
             // PIN is never returned from server for security reasons - keep localStorage value
-            
+
             if (currentStatus.machine_type && (!machineTypeSelect.value || currentStatus.machine_type !== machineTypeSelect.value)) {
                 machineTypeSelect.value = currentStatus.machine_type;
                 // Load printer types for the current machine type, then set the value
@@ -581,10 +617,10 @@
                 // Machine type hasn't changed, just update printer type
                 printerTypeSelect.value = currentStatus.printer_type;
             }
-            
+
             // Save current form state after updating from server
             saveFormToStorage();
-            
+
             // Buttons
             if (isRegistered) {
                 connectBtn.style.display = 'none';
@@ -600,25 +636,25 @@
             const pin = pinInput.value.trim();
             const machineType = machineTypeSelect.value;
             const printerType = printerTypeSelect.value;
-            
+
             if (!username || !pin) {
                 showMessage('Please enter both username and PIN', 'error');
                 return;
             }
-            
+
             if (!machineType) {
                 showMessage('Please select a machine type', 'error');
                 return;
             }
-            
+
             if (!printerType) {
                 showMessage('Please select a printer type', 'error');
                 return;
             }
-            
+
             try {
                 showLoading(true);
-                
+
                 const response = await fetch(`${API_BASE}/register`, {
                     method: 'POST',
                     headers: {
@@ -631,9 +667,9 @@
                         printer_type: printerType
                     })
                 });
-                
+
                 const result = await response.json();
-                
+
                 if (result.success) {
                     showMessage('Successfully connected to Polar Cloud!', 'success');
                     setTimeout(loadStatus, 2000);
@@ -641,7 +677,7 @@
                     const errorMsg = typeof result.error === 'object' ? JSON.stringify(result.error) : (result.error || 'Unknown error');
                     showMessage('Connection failed: ' + errorMsg, 'error');
                 }
-                
+
             } catch (error) {
                 console.error('Error connecting:', error);
                 // Check if this is a JSON parsing error from HTML response
@@ -659,23 +695,23 @@
             if (!confirm('Are you sure you want to disconnect from Polar Cloud?')) {
                 return;
             }
-            
+
             try {
                 showLoading(true);
-                
+
                 const response = await fetch(`${API_BASE}/unregister`, {
                     method: 'POST'
                 });
-                
+
                 const result = await response.json();
-                
+
                 if (result.success) {
                     showMessage('Successfully disconnected from Polar Cloud', 'success');
                     loadStatus();
                 } else {
                     showMessage('Disconnect failed: ' + (result.error || 'Unknown error'), 'error');
                 }
-                
+
             } catch (error) {
                 console.error('Error disconnecting:', error);
                 showMessage('Disconnect failed: ' + error.message, 'error');
@@ -688,22 +724,22 @@
             try {
                 showLoading(true);
                 showMessage('Generating diagnostic logs, please wait...', 'success');
-                
+
                 const response = await fetch(`${API_BASE}/export_logs`);
                 const data = await response.json();
-                
+
                 if (data.error) {
                     throw new Error(data.error);
                 }
-                
+
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
-                
+
                 // Get log content and filename from the response
                 const logContent = data.result.logs;
                 const filename = data.result.filename || 'polar_cloud_logs.txt';
-                
+
                 // Create blob and download
                 const blob = new Blob([logContent], { type: 'text/plain' });
                 const url = window.URL.createObjectURL(blob);
@@ -714,9 +750,9 @@
                 a.click();
                 window.URL.revokeObjectURL(url);
                 document.body.removeChild(a);
-                
+
                 showMessage('Diagnostic logs exported successfully!', 'success');
-                
+
             } catch (error) {
                 console.error('Error exporting logs:', error);
                 showMessage('Failed to export logs: ' + error.message, 'error');
@@ -736,7 +772,7 @@
         function showMessage(text, type) {
             message.textContent = text;
             message.className = `message ${type} show`;
-            
+
             setTimeout(() => {
                 message.classList.remove('show');
             }, 5000);
@@ -750,66 +786,64 @@
                     printerTypeSelect.innerHTML = '<option value="">Select machine type first...</option>';
                     return;
                 }
-                
+
                 // Call Polar Cloud API directly like OctoPrint does
                 const apiUrl = `https://polar3d.com/api/v1/printer_makes?filter=${machineType.toLowerCase()}`;
                 const response = await fetch(apiUrl);
-                
+
                 if (!response.ok) {
                     throw new Error(`API request failed: ${response.status}`);
                 }
-                
+
                 const data = await response.json();
-                
+
                 // Extract printer types from API response
                 let printerTypes = [];
                 if (data && data.printerMakes && Array.isArray(data.printerMakes)) {
                     printerTypes = data.printerMakes;
                 }
-                
-                // Add "Other/Custom" option
-                if (printerTypes.length > 0) {
-                    printerTypes.push("Other/Custom");
-                } else {
+
+                // Add "Other/Custom" option - REMOVED as it causes "Unknown printer make name" error
+
+                if (printerTypes.length === 0) {
                     // Fallback if no printers found
-                    printerTypes = [`${machineType}`, "Other/Custom"];
+                    printerTypes = [`${machineType}`];
                 }
-                
                 populatePrinterTypeSelect(printerTypes);
-                
+
             } catch (error) {
                 console.error('Error loading printer types:', error);
                 showMessage('Failed to load printer types, using defaults: ' + error.message, 'error');
-                
+
                 // Provide fallback printer types based on machine type
                 const machineType = machineTypeSelect.value || 'Cartesian';
-                const fallbackTypes = [`${machineType}`, "Other/Custom"];
+                const fallbackTypes = [`${machineType}`];
                 populatePrinterTypeSelect(fallbackTypes);
             }
         }
 
         function populatePrinterTypeSelect(types) {
             printerTypeSelect.innerHTML = '';
-            
+
             // Add a default "Select printer type" option
             const defaultOption = document.createElement('option');
             defaultOption.value = '';
             defaultOption.textContent = 'Select printer type...';
             printerTypeSelect.appendChild(defaultOption);
-            
+
             types.forEach(type => {
                 const option = document.createElement('option');
                 option.value = type;
                 option.textContent = type;
                 printerTypeSelect.appendChild(option);
             });
-            
+
             // Restore saved printer type value if it exists
             if (printerTypeSelect.dataset.savedValue) {
                 printerTypeSelect.value = printerTypeSelect.dataset.savedValue;
                 delete printerTypeSelect.dataset.savedValue;
             }
-            
+
             // If there's a current printer type, select it
             if (currentStatus && currentStatus.printer_type) {
                 printerTypeSelect.value = currentStatus.printer_type;
@@ -819,15 +853,15 @@
         function handleMachineTypeChange() {
             loadPrinterTypes();
         }
-        
+
         async function performUpdate() {
             const updateButton = document.getElementById('update-button');
             const originalText = updateButton.innerHTML;
-            
+
             // Disable button and show progress
             updateButton.disabled = true;
             updateButton.innerHTML = 'Updating...';
-            
+
             try {
                 const response = await fetch('/server/polar_cloud/update', {
                     method: 'POST',
@@ -835,16 +869,16 @@
                         'Content-Type': 'application/json'
                     }
                 });
-                
+
                 const result = await response.json();
-                
+
                 if (result.success) {
                     updateButton.innerHTML = 'Update Started!';
                     showMessage('Update initiated successfully. The service will restart automatically.', 'success');
-                    
+
                     // Hide update button after success
                     document.getElementById('update-item').style.display = 'none';
-                    
+
                     // Refresh status after a delay
                     setTimeout(() => {
                         loadStatus();
@@ -862,4 +896,5 @@
         }
     </script>
 </body>
-</html> 
+
+</html>
