@@ -229,7 +229,6 @@ The integration uses Socket.IO to communicate with Polar Cloud servers:
 
 ## License
 
-[Insert your preferred license here]
 
 ## Credits
 
