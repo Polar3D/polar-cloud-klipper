@@ -381,6 +381,15 @@
                         </select>
                     </div>
                     <div>
+                        <label for="manufacturer">Manufacturer</label>
+                        <select id="manufacturer">
+                            <option value="generic">Generic Klipper</option>
+                            <option value="elegoo">Elegoo</option>
+                            <option value="creality">Creality</option>
+                            <option value="anycubic">Anycubic</option>
+                        </select>
+                    </div>
+                    <div>
                         <label for="printer-type">Printer Type</label>
                         <select id="printer-type">
                             <option value="">Select printer type...</option>
@@ -429,6 +438,7 @@
         const usernameInput = document.getElementById('username');
         const pinInput = document.getElementById('pin');
         const machineTypeSelect = document.getElementById('machine-type');
+        const manufacturerSelect = document.getElementById('manufacturer');
         const printerTypeSelect = document.getElementById('printer-type');
 
         const connectBtn = document.getElementById('connect-btn');
@@ -449,6 +459,10 @@
         usernameInput.addEventListener('input', saveFormToStorage);
         pinInput.addEventListener('input', saveFormToStorage);
         machineTypeSelect.addEventListener('change', saveFormToStorage);
+        manufacturerSelect.addEventListener('change', () => {
+            saveFormToStorage();
+            loadPrinterTypes();
+        });
         printerTypeSelect.addEventListener('change', saveFormToStorage);
 
         // Initialize
@@ -471,6 +485,7 @@
                 username: usernameInput.value,
                 pin: pinInput.value,
                 machine_type: machineTypeSelect.value,
+                manufacturer: manufacturerSelect.value,
                 printer_type: printerTypeSelect.value
             };
             localStorage.setItem('polar_cloud_form', JSON.stringify(formData));
@@ -486,6 +501,7 @@
                     if (formData.username) usernameInput.value = formData.username;
                     if (formData.pin) pinInput.value = formData.pin;
                     if (formData.machine_type) machineTypeSelect.value = formData.machine_type;
+                    if (formData.manufacturer) manufacturerSelect.value = formData.manufacturer;
                     // Note: printer_type will be set after loadPrinterTypes() completes
 
                     // Store the printer type to be set later
@@ -618,6 +634,12 @@
                 printerTypeSelect.value = currentStatus.printer_type;
             }
 
+            if (currentStatus.manufacturer && (!manufacturerSelect.value || currentStatus.manufacturer !== manufacturerSelect.value)) {
+                manufacturerSelect.value = currentStatus.manufacturer;
+                // Reload printer types since manufacturer changed
+                loadPrinterTypes();
+            }
+
             // Save current form state after updating from server
             saveFormToStorage();
 
@@ -635,6 +657,7 @@
             const username = usernameInput.value.trim();
             const pin = pinInput.value.trim();
             const machineType = machineTypeSelect.value;
+            const manufacturer = manufacturerSelect.value;
             const printerType = printerTypeSelect.value;
 
             if (!username || !pin) {
@@ -664,6 +687,7 @@
                         username: username,
                         pin: pin,
                         machine_type: machineType,
+                        manufacturer: manufacturer,
                         printer_type: printerType
                     })
                 });
@@ -798,18 +822,44 @@
                 const data = await response.json();
 
                 // Extract printer types from API response
-                let printerTypes = [];
-                if (data && data.printerMakes && Array.isArray(data.printerMakes)) {
-                    printerTypes = data.printerMakes;
+                let printerMakes = data.printerMakes || [];
+
+                // Filter based on manufacturer
+                const manufacturer = manufacturerSelect.value;
+                if (manufacturer && manufacturer !== 'generic') {
+                    printerMakes = printerMakes.filter(make => {
+                        const makeLower = make.toLowerCase();
+                        if (manufacturer === 'elegoo') {
+                            return makeLower.includes('elegoo') || makeLower.includes('neptune');
+                        } else if (manufacturer === 'creality') {
+                            return makeLower.includes('creality') || makeLower.includes('ender') || makeLower.includes('cr-');
+                        } else if (manufacturer === 'anycubic') {
+                            return makeLower.includes('anycubic') || makeLower.includes('kobra') || makeLower.includes('vyper') || makeLower.includes('mega') || makeLower.includes('chiron');
+                        }
+                        return true;
+                    });
                 }
 
-                // Add "Other/Custom" option - REMOVED as it causes "Unknown printer make name" error
+                // Populate select
+                printerTypeSelect.innerHTML = '<option value="">Select printer type...</option>';
 
-                if (printerTypes.length === 0) {
-                    // Fallback if no printers found
-                    printerTypes = [`${machineType}`];
+                printerMakes.forEach(make => {
+                    const option = document.createElement('option');
+                    option.value = make;
+                    option.textContent = make;
+                    printerTypeSelect.appendChild(option);
+                });
+
+                // Restore saved printer type value if it exists
+                if (printerTypeSelect.dataset.savedValue) {
+                    printerTypeSelect.value = printerTypeSelect.dataset.savedValue;
+                    delete printerTypeSelect.dataset.savedValue;
                 }
-                populatePrinterTypeSelect(printerTypes);
+
+                // If there's a current printer type, select it
+                if (currentStatus && currentStatus.printer_type) {
+                    printerTypeSelect.value = currentStatus.printer_type;
+                }
 
             } catch (error) {
                 console.error('Error loading printer types:', error);
@@ -817,38 +867,16 @@
 
                 // Provide fallback printer types based on machine type
                 const machineType = machineTypeSelect.value || 'Cartesian';
-                const fallbackTypes = [`${machineType}`];
-                populatePrinterTypeSelect(fallbackTypes);
+                printerTypeSelect.innerHTML = `<option value="${machineType}">${machineType}</option>`;
             }
         }
 
-        function populatePrinterTypeSelect(types) {
-            printerTypeSelect.innerHTML = '';
 
-            // Add a default "Select printer type" option
-            const defaultOption = document.createElement('option');
-            defaultOption.value = '';
-            defaultOption.textContent = 'Select printer type...';
-            printerTypeSelect.appendChild(defaultOption);
-
-            types.forEach(type => {
-                const option = document.createElement('option');
-                option.value = type;
-                option.textContent = type;
-                printerTypeSelect.appendChild(option);
-            });
-
-            // Restore saved printer type value if it exists
-            if (printerTypeSelect.dataset.savedValue) {
-                printerTypeSelect.value = printerTypeSelect.dataset.savedValue;
-                delete printerTypeSelect.dataset.savedValue;
-            }
-
-            // If there's a current printer type, select it
-            if (currentStatus && currentStatus.printer_type) {
-                printerTypeSelect.value = currentStatus.printer_type;
-            }
+        // If there's a current printer type, select it
+        if (currentStatus && currentStatus.printer_type) {
+            printerTypeSelect.value = currentStatus.printer_type;
         }
+
 
         function handleMachineTypeChange() {
             loadPrinterTypes();

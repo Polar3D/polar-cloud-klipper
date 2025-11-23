@@ -67,6 +67,7 @@ class PolarCloudPlugin:
                 'pin': '',
                 'machine_type': 'Cartesian',
                 'printer_type': 'Cartesian',
+                'manufacturer': 'generic',
                 'verbose': 'false',
                 'max_image_size': '150000'
             }
@@ -119,6 +120,7 @@ class PolarCloudPlugin:
                 "username": username,
                 "machine_type": self.config.get('polar_cloud', 'machine_type', fallback='Cartesian'),
                 "printer_type": self.config.get('polar_cloud', 'printer_type', fallback='Cartesian'),
+                "manufacturer": self.config.get('polar_cloud', 'manufacturer', fallback='generic'),
                 "last_update": realtime_status.get('last_update', ''),
                 "webcam_enabled": self.config.get('polar_cloud', 'webcam_enabled', fallback='true').lower() == 'true',
                 "version_info": version_info
@@ -135,6 +137,7 @@ class PolarCloudPlugin:
             pin = web_request.get_str('pin', '')
             machine_type = web_request.get_str('machine_type', 'Cartesian')
             printer_type = web_request.get_str('printer_type', 'Cartesian')
+            manufacturer = web_request.get_str('manufacturer', 'generic')
             
             if not username or not pin:
                 return {"error": "Username and PIN are required"}
@@ -144,6 +147,7 @@ class PolarCloudPlugin:
             self.config['polar_cloud']['pin'] = pin
             self.config['polar_cloud']['machine_type'] = machine_type
             self.config['polar_cloud']['printer_type'] = printer_type
+            self.config['polar_cloud']['manufacturer'] = manufacturer
             self.save_config()
             
             # Restart service to pick up new config
@@ -191,13 +195,14 @@ class PolarCloudPlugin:
                     "username": self.config.get('polar_cloud', 'username', fallback=''),
                     "machine_type": self.config.get('polar_cloud', 'machine_type', fallback='Cartesian'),
                     "printer_type": self.config.get('polar_cloud', 'printer_type', fallback='Cartesian'),
+                    "manufacturer": self.config.get('polar_cloud', 'manufacturer', fallback='generic'),
                     "max_image_size": self.config.get('polar_cloud', 'max_image_size', fallback='150000'),
                     "verbose": self.config.get('polar_cloud', 'verbose', fallback='false'),
                     "serial_number": self.config.get('polar_cloud', 'serial_number', fallback='')
                 }
             else:
                 # Update configuration
-                for key in ['server_url', 'machine_type', 'printer_type', 'max_image_size', 'verbose']:
+                for key in ['server_url', 'machine_type', 'printer_type', 'manufacturer', 'max_image_size', 'verbose']:
                     value = web_request.get_str(key, None)
                     if value is not None:
                         self.config['polar_cloud'][key] = value

@@ -452,6 +452,7 @@ class PolarCloudService:
                     'pin': '',
                     'machine_type': 'Cartesian',
                     'printer_type': 'Cartesian',
+                    'manufacturer': 'generic',
                     'verbose': 'false',
                     'max_image_size': '150000',
                     'webcam_enabled': 'true'
@@ -477,6 +478,7 @@ class PolarCloudService:
                 "username": self.config.get('polar_cloud', 'username', fallback=''),
                 "machine_type": self.config.get('polar_cloud', 'machine_type', fallback='Cartesian'),
                 "printer_type": self.config.get('polar_cloud', 'printer_type', fallback='Cartesian'),
+                "manufacturer": self.config.get('polar_cloud', 'manufacturer', fallback='generic'),
                 "last_update": datetime.now().isoformat(),
                 "challenge": self.challenge or "",
                 "webcam_enabled": self.config.get('polar_cloud', 'webcam_enabled', fallback='true').lower() == 'true'
@@ -1205,8 +1207,20 @@ class PolarCloudService:
                 format=serialization.PublicFormat.SubjectPublicKeyInfo
             ).decode('utf-8')
             
+            # Get manufacturer code
+            manufacturer = self.config.get('polar_cloud', 'manufacturer', fallback='generic').lower()
+            
+            # Map manufacturer to code
+            mfg_code = 'kl' # Default to generic Klipper
+            if manufacturer == 'elegoo':
+                mfg_code = 'el'
+            elif manufacturer == 'creality':
+                mfg_code = 'cr'
+            elif manufacturer == 'anycubic':
+                mfg_code = 'ac'
+                
             registration_data = {
-                "mfg": "mnsl",
+                "mfg": mfg_code,
                 "email": username,
                 "pin": pin,
                 "publicKey": public_key_pem,
@@ -1219,7 +1233,7 @@ class PolarCloudService:
             }
             
             await self.sio.emit("register", registration_data)
-            logger.info("Registration request sent to Polar Cloud with MNSL client identifier")
+            logger.info(f"Registration request sent to Polar Cloud with {mfg_code} client identifier")
             return True
         except Exception as e:
             logger.error(f"Error registering printer: {e}")
@@ -1239,6 +1253,16 @@ class PolarCloudService:
             # Get webcam transformation settings to inform the web browser
             webcam_settings = await self.get_webcam_settings()
             
+            # Get manufacturer code for mfgSn
+            manufacturer = self.config.get('polar_cloud', 'manufacturer', fallback='generic').lower()
+            mfg_code = 'kl' # Default to generic Klipper
+            if manufacturer == 'elegoo':
+                mfg_code = 'el'
+            elif manufacturer == 'creality':
+                mfg_code = 'cr'
+            elif manufacturer == 'anycubic':
+                mfg_code = 'ac'
+
             hello_data = {
                 "serialNumber": self.serial_number,
                 "protocol": "2",
@@ -1251,7 +1275,7 @@ class PolarCloudService:
                         hashes.SHA256()
                     )
                 ).decode('utf-8'),
-                "mfgSn": "MNSL-" + self.get_mac_address().replace(":", ""),  # Add manufacturer serial
+                "mfgSn": f"{mfg_code.upper()}-" + self.get_mac_address().replace(":", ""),  # Add manufacturer serial
                 "printerMake": self.config.get('polar_cloud', 'printer_type', fallback='Cartesian'),  # Use actual printer type
                 "version": self.running_version,
                 "camOff": 0 if webcam_enabled else 1,  # 0=camera on, 1=camera off
