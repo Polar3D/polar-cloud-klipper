@@ -119,7 +119,6 @@ class PolarCloudPlugin:
                 "serial_number": serial_number,
                 "username": username,
                 "machine_type": self.config.get('polar_cloud', 'machine_type', fallback='Cartesian'),
-                "machine_type": self.config.get('polar_cloud', 'machine_type', fallback='Cartesian'),
                 "printer_type": self.config.get('polar_cloud', 'printer_type', fallback='Cartesian'),
                 "manufacturer": self.config.get('polar_cloud', 'manufacturer', fallback='generic'),
                 "last_update": realtime_status.get('last_update', ''),
@@ -136,7 +135,6 @@ class PolarCloudPlugin:
             # Use the web_request methods to get parameters
             username = web_request.get_str('username', '')
             pin = web_request.get_str('pin', '')
-            machine_type = web_request.get_str('machine_type', 'Cartesian')
             machine_type = web_request.get_str('machine_type', 'Cartesian')
             printer_type = web_request.get_str('printer_type', 'Cartesian')
             manufacturer = web_request.get_str('manufacturer', 'generic')
@@ -195,7 +193,6 @@ class PolarCloudPlugin:
                 return {
                     "server_url": self.config.get('polar_cloud', 'server_url', fallback='https://printer4.polar3d.com'),
                     "username": self.config.get('polar_cloud', 'username', fallback=''),
-                    "machine_type": self.config.get('polar_cloud', 'machine_type', fallback='Cartesian'),
                     "machine_type": self.config.get('polar_cloud', 'machine_type', fallback='Cartesian'),
                     "printer_type": self.config.get('polar_cloud', 'printer_type', fallback='Cartesian'),
                     "manufacturer": self.config.get('polar_cloud', 'manufacturer', fallback='generic'),

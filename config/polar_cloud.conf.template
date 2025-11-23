@@ -32,6 +32,9 @@ machine_type = Cartesian
 # or check https://polar3d.com/api/v1/printer_makes for the full list
 printer_type = Cartesian
 
+# Manufacturer: generic, elegoo, creality, anycubic
+manufacturer = generic
+
 # Image Settings
 max_image_size = 150000
 # Set to false if you don't have a webcam configured
