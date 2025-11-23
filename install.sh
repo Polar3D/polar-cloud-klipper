@@ -473,22 +473,28 @@ EOF
             return
         fi
         
-        # Backup the original configuration
-        sudo cp "$nginx_conf" "${nginx_conf}.backup.$(date +%Y%m%d_%H%M%S)"
-        print_info "Created backup of nginx configuration"
+        # Backup the original configuration to a safe location (not sites-enabled)
+        local backup_dir="/tmp/polar_cloud_backups"
+        mkdir -p "$backup_dir"
+        local backup_file="$backup_dir/$(basename "$nginx_conf").backup.$(date +%Y%m%d_%H%M%S)"
+        
+        sudo cp "$nginx_conf" "$backup_file"
+        print_info "Created backup of nginx configuration at $backup_file"
         
         # Check if /server location exists for Moonraker
+        # Check for both standard location and regex pattern used in some configs
         local needs_server_proxy=false
-        if ! grep -q "location.*/server" "$nginx_conf"; then
+        if ! grep -q "location.*/server" "$nginx_conf" && ! grep -q "location.*\^/.*server" "$nginx_conf"; then
             needs_server_proxy=true
             print_warning "Nginx missing /server proxy for Moonraker API"
+        else
+            print_info "Found existing /server proxy configuration"
         fi
         
         # Prepare the nginx snippet with actual path
         local nginx_snippet=""
         if [ "$needs_server_proxy" = true ]; then
             nginx_snippet=$(cat << EOF
-
 # Moonraker API proxy (required for Polar Cloud)
 # Automatically added by Polar Cloud installer on $(date)
 location /server {
@@ -600,17 +606,14 @@ EOF
         print_info "Attempting to restore backup..."
         
         # Try to restore from backup
-        if [ -f "${nginx_conf}.backup."* ]; then
-            local latest_backup=$(ls -t "${nginx_conf}.backup."* 2>/dev/null | head -1)
-            if [ -n "$latest_backup" ]; then
-                sudo cp "$latest_backup" "$nginx_conf"
-                if sudo nginx -t 2>/dev/null; then
-                    sudo systemctl reload nginx
-                    print_warning "Restored nginx configuration from backup"
-                    print_info "Manual configuration may be required"
-                else
-                    print_error "Could not restore nginx configuration"
-                fi
+        if [ -f "$backup_file" ]; then
+            sudo cp "$backup_file" "$nginx_conf"
+            if sudo nginx -t 2>/dev/null; then
+                sudo systemctl reload nginx
+                print_warning "Restored nginx configuration from backup"
+                print_info "Manual configuration may be required"
+            else
+                print_error "Could not restore nginx configuration"
             fi
         fi
     fi
