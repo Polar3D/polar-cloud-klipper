@@ -62,6 +62,9 @@ The installer will:
 
 After installation, you may need to manually add nginx configuration. The installer will provide the exact configuration snippet to add to your nginx config.
 
+> [!NOTE]
+> If the installer cannot automatically configure nginx, it will create a standalone configuration on port 8080. You can access the web interface at `http://your-printer-ip:8080/polar-cloud/`.
+
 ## Usage
 
 ### Web Interface Setup
@@ -70,7 +73,7 @@ After installation, you may need to manually add nginx configuration. The instal
 2. Enter your Polar Cloud credentials:
    - Username: Your Polar Cloud username
    - PIN: Get from [https://polar3d.com/](https://polar3d.com/)
-3. Select your printer type and machine configuration
+3. Select your machine type, manufacturer, and printer model
 4. Save settings and wait for connection
 
 ### API Integration
@@ -118,7 +121,13 @@ serial_number = auto_generated
 # Printer settings
 machine_type = Cartesian
 printer_type = Ender 3
+manufacturer = generic
 webcam_enabled = true
+
+# Webcam settings
+# flip_horizontal = false
+# flip_vertical = false
+# rotation = 0
 
 # Advanced settings
 verbose = false
