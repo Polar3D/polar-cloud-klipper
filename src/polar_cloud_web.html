@@ -60,14 +60,14 @@
 
         .status-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
             gap: 20px;
         }
 
         .status-item {
             display: flex;
-            justify-content: space-between;
-            align-items: center;
+            flex-direction: column;
+            gap: 6px;
             padding: 12px 15px;
             background: rgba(255, 255, 255, 0.02);
             border-radius: 6px;
@@ -93,6 +93,7 @@
             align-items: center;
             gap: 8px;
             font-weight: 600;
+            word-break: break-word;
         }
 
         .status-dot {
