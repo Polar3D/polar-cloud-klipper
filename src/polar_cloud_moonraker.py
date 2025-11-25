@@ -123,7 +123,9 @@ class PolarCloudPlugin:
                 "manufacturer": self.config.get('polar_cloud', 'manufacturer', fallback='generic'),
                 "last_update": realtime_status.get('last_update', ''),
                 "webcam_enabled": self.config.get('polar_cloud', 'webcam_enabled', fallback='true').lower() == 'true',
-                "version_info": version_info
+                "version_info": version_info,
+                "last_error": realtime_status.get('last_error'),
+                "last_error_time": realtime_status.get('last_error_time')
             }
         except Exception as e:
             logging.error(f"Error getting polar cloud status: {e}")

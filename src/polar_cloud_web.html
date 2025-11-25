@@ -353,6 +353,10 @@
                         </button>
                     </span>
                 </div>
+                <div class="status-item" id="error-item" style="display: none;">
+                    <span class="status-label">Last Error:</span>
+                    <span class="status-value" id="error-display" style="color: #ff6b6b;"></span>
+                </div>
             </div>
         </div>
 
@@ -616,6 +620,16 @@
                 document.getElementById('update-item').style.display = 'none';
             }
 
+            // Last error display
+            const errorItem = document.getElementById('error-item');
+            const errorDisplay = document.getElementById('error-display');
+            if (currentStatus.last_error) {
+                errorDisplay.textContent = currentStatus.last_error;
+                errorItem.style.display = 'block';
+            } else {
+                errorItem.style.display = 'none';
+            }
+
             // Form - prefer server values over localStorage for registered users
             if (currentStatus.username && (!usernameInput.value || currentStatus.username !== usernameInput.value)) {
                 usernameInput.value = currentStatus.username;
@@ -696,11 +710,25 @@
                 const result = await response.json();
 
                 if (result.success) {
-                    showMessage('Successfully connected to Polar Cloud!', 'success');
-                    setTimeout(loadStatus, 2000);
+                    showMessage('Registration initiated. The service is connecting to Polar Cloud - check the status above in a few seconds.', 'success');
+                    // Poll for status updates to show connection result
+                    let pollCount = 0;
+                    const pollInterval = setInterval(async () => {
+                        pollCount++;
+                        await loadStatus();
+                        // Stop polling after 30 seconds or if we see an error/success
+                        if (pollCount >= 15 || currentStatus.authenticated || currentStatus.last_error) {
+                            clearInterval(pollInterval);
+                            if (currentStatus.authenticated) {
+                                showMessage('Successfully connected to Polar Cloud!', 'success');
+                            } else if (currentStatus.last_error) {
+                                showMessage('Connection failed: ' + currentStatus.last_error + '. Click "Export Logs" for more details.', 'error');
+                            }
+                        }
+                    }, 2000);
                 } else {
-                    const errorMsg = typeof result.error === 'object' ? JSON.stringify(result.error) : (result.error || 'Unknown error');
-                    showMessage('Connection failed: ' + errorMsg, 'error');
+                    const errorMsg = typeof result.error === 'object' ? JSON.stringify(result.error) : (result.error || 'Service error - check logs for details');
+                    showMessage('Connection failed: ' + errorMsg + '. Click "Export Logs" for diagnostic information.', 'error');
                 }
 
             } catch (error) {
