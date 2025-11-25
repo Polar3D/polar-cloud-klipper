@@ -191,6 +191,7 @@ class PolarCloudService:
             """Handle connection error"""
             logger.error(f"Connection error: {data}")
             self.connected = False
+            self.write_status_file(error=f"Connection error: {data}")
         
         @self.sio.event
         async def welcome(data):
@@ -256,29 +257,41 @@ class PolarCloudService:
                         self.serial_number = serial_number
                         self.config['polar_cloud']['serial_number'] = self.serial_number
                         self.save_config()
+                        # Clear any previous error on successful registration
+                        self.last_error = None
+                        self.last_error_time = None
                         self.write_status_file()
-                        
+
                         logger.info(f"Successfully registered with serial number: {self.serial_number}")
-                        
+
                         # Disconnect and reconnect as per protocol
                         logger.info("Disconnecting after registration as per protocol - will reconnect automatically")
                         await self.sio.disconnect()
                         # Wait for disconnect to complete before allowing reconnection
                         await asyncio.sleep(2)
                     else:
+                        error_msg = f"Registration failed - Status: {status}, Reason: {reason}"
+                        if reason and reason != status:
+                            error_msg = f"Registration failed: {reason}"
+                        elif status == "FAILED":
+                            error_msg = "Registration failed: Invalid credentials or account issue"
                         logger.error(f"Registration failed - Status: {status}, Reason: {reason}, SerialNumber: {serial_number}")
+                        self.write_status_file(error=error_msg)
                         
                 elif isinstance(data, str):
                     # Response is just a string - this might indicate an issue with the request format
                     logger.warning(f"Received string response instead of expected JSON object: {data}")
                     if data.upper() == "SUCCESS":
                         logger.error("Registration appears successful but no serial number provided - this suggests the registration request may be malformed")
+                        self.write_status_file(error="Registration error: Server response missing serial number")
                     else:
                         logger.error(f"Registration failed with string response: {data}")
-                        
+                        self.write_status_file(error=f"Registration failed: {data}")
+
                 else:
                     # Unexpected response format
                     logger.error(f"Unexpected registration response format: {type(data)} = {data}")
+                    self.write_status_file(error=f"Registration error: Unexpected response format")
                     
             except Exception as e:
                 logger.error(f"Error handling registration response: {e}")
@@ -314,22 +327,27 @@ class PolarCloudService:
                 if success:
                     logger.info("Hello response received successfully")
                     self.hello_sent = True
+                    # Clear any previous error on successful authentication
+                    self.last_error = None
+                    self.last_error_time = None
                     self.write_status_file()
-                    
+
                     # Start sending status updates and request initial upload URLs
                     if not hasattr(self, '_status_task') or self._status_task.done():
                         self._status_task = asyncio.create_task(self.status_loop())
-                    
+
                     # Request initial upload URLs
                     await self.request_upload_url("idle")
-                    
+
                 else:
                     logger.error(f"Hello failed - Response: {data}")
                     if reason:
                         logger.error(f"Failure reason: {reason}")
                     self.hello_sent = False
+                    self.write_status_file(error=f"Authentication failed: {reason}" if reason else "Authentication failed")
             except Exception as e:
                 logger.error(f"Error handling hello response: {e}")
+                self.write_status_file(error=f"Authentication error: {e}")
         
         @self.sio.event
         async def getUrlResponse(data):
@@ -468,9 +486,14 @@ class PolarCloudService:
         with open(self.config_file, 'w') as f:
             self.config.write(f)
     
-    def write_status_file(self):
+    def write_status_file(self, error=None):
         """Write current status to file for Moonraker plugin"""
         try:
+            # Update last_error if provided
+            if error:
+                self.last_error = error
+                self.last_error_time = datetime.now().isoformat()
+
             status = {
                 "connected": self.connected,
                 "authenticated": self.hello_sent,
@@ -481,7 +504,9 @@ class PolarCloudService:
                 "manufacturer": self.config.get('polar_cloud', 'manufacturer', fallback='generic'),
                 "last_update": datetime.now().isoformat(),
                 "challenge": self.challenge or "",
-                "webcam_enabled": self.config.get('polar_cloud', 'webcam_enabled', fallback='true').lower() == 'true'
+                "webcam_enabled": self.config.get('polar_cloud', 'webcam_enabled', fallback='true').lower() == 'true',
+                "last_error": getattr(self, 'last_error', None),
+                "last_error_time": getattr(self, 'last_error_time', None)
             }
             
             with open(self.status_file, 'w') as f:

@@ -137,10 +137,37 @@ max_image_size = 150000
 
 ## Troubleshooting
 
+### Exporting Diagnostic Logs
+
+The easiest way to troubleshoot connection issues is to use the **Export Logs** button in the web interface. This generates a comprehensive diagnostic file containing:
+- System information
+- Network connectivity tests
+- Service status
+- Recent log entries
+- Configuration (with PIN masked)
+
+### Viewing Logs
+
+**Real-time logs:**
+```bash
+sudo journalctl -u polar_cloud -f
+```
+
+**Recent log entries:**
+```bash
+sudo journalctl -u polar_cloud --since "10 minutes ago"
+```
+
+**Application log file:**
+```bash
+cat ~/printer_data/logs/polar_cloud.log
+```
+
 ### Connection Issues
 
 1. **Service not starting**:
    ```bash
+   sudo systemctl status polar_cloud
    sudo journalctl -u polar_cloud -f
    ```
 
@@ -148,16 +175,23 @@ max_image_size = 150000
    - Verify credentials at [https://polar3d.com/](https://polar3d.com/)
    - Check firewall settings (port 443 outbound)
    - Review service logs for specific error messages
+   - The web interface will display the last error in the Connection Status section
 
 3. **Web interface not accessible**:
    - Ensure nginx configuration was added correctly
    - Test nginx config: `sudo nginx -t`
    - Restart nginx: `sudo systemctl restart nginx`
 
+4. **Printer not in dropdown list**:
+   - Printer types are loaded from Polar Cloud's database
+   - If your exact printer model isn't listed, select a similar model or use "Cartesian" as a generic option
+   - CoreXY printers (like Voron) can use the "Cartesian" machine type
+
 ### Common Issues
 
 - **"Registration failed: SUCCESS"**: Indicates server format mismatch, check logs for details
-- **Repeated registration attempts**: Service unable to save serial number, check file permissions
+- **"Authentication failed"**: Verify your username and PIN are correct, and that your account is active on polar3d.com
+- **Repeated registration attempts**: Service unable to save serial number, check file permissions for `~/printer_data/config/`
 - **Web interface shows incorrect status**: Status file may not be updating, restart both services
 
 ### Debug Mode
@@ -167,7 +201,11 @@ Enable verbose logging in configuration:
 verbose = true
 ```
 
-Then restart the service and monitor logs.
+Then restart the service and monitor logs:
+```bash
+sudo systemctl restart polar_cloud
+sudo journalctl -u polar_cloud -f
+```
 
 ## Uninstallation
 
