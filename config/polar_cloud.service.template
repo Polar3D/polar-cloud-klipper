@@ -10,6 +10,7 @@ Group={{USER}}
 ExecStart={{POLAR_DIR}}/venv/bin/python {{POLAR_DIR}}/src/polar_cloud.py
 Restart=always
 RestartSec=10
+TimeoutStopSec=5
 StandardOutput=journal
 StandardError=journal
 

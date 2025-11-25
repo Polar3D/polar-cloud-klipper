@@ -1791,20 +1791,26 @@ class PolarCloudService:
         except Exception as e:
             logger.error(f"Error executing temperature command: {e}")
 
-def signal_handler(signum, frame):
-    """Handle shutdown signals"""
-    logger.info(f"Received signal {signum}, shutting down...")
-    sys.exit(0)
+# Global flag for shutdown
+_shutdown_requested = False
 
 async def main():
     """Main entry point"""
-    # Set up signal handlers
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
+    global _shutdown_requested
+
     # Create and run service
     service = PolarCloudService()
-    
+
+    # Set up signal handlers for graceful shutdown
+    def shutdown_handler(signum, frame):
+        global _shutdown_requested
+        logger.info(f"Received signal {signum}, shutting down...")
+        _shutdown_requested = True
+        service.stop()
+
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+
     try:
         await service.run()
     except KeyboardInterrupt:
@@ -1812,7 +1818,13 @@ async def main():
     finally:
         service.stop()
         if service.connected:
-            await service.sio.disconnect()
+            try:
+                await asyncio.wait_for(service.sio.disconnect(), timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning("Disconnect timed out")
+            except Exception as e:
+                logger.debug(f"Disconnect error: {e}")
+        logger.info("Shutdown complete")
 
 if __name__ == "__main__":
     asyncio.run(main()) 
