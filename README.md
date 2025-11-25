@@ -99,10 +99,20 @@ sudo journalctl -u polar_cloud -f
 
 # Restart service
 sudo systemctl restart polar_cloud
-
-# Test connection
-cd ~/polar-cloud && ./venv/bin/python test_socketio.py
 ```
+
+### Updating
+
+Updates can be done through the Mainsail/Fluidd update manager UI - look for "Polar Cloud" in the Machine/Update Manager section.
+
+To update manually:
+```bash
+cd ~/polar-cloud-klipper
+git pull
+./install.sh
+```
+
+The install script preserves your existing configuration while updating the code and service files.
 
 ## Configuration
 
