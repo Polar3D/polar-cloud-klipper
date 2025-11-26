@@ -120,7 +120,7 @@ class PolarCloudPlugin:
                 "username": username,
                 "machine_type": self.config.get('polar_cloud', 'machine_type', fallback='Cartesian'),
                 "printer_type": self.config.get('polar_cloud', 'printer_type', fallback='Cartesian'),
-                "manufacturer": self.config.get('polar_cloud', 'manufacturer', fallback='generic'),
+                "manufacturer": self.config.get('polar_cloud', 'manufacturer', fallback='Klipper Generic'),
                 "last_update": realtime_status.get('last_update', ''),
                 "webcam_enabled": self.config.get('polar_cloud', 'webcam_enabled', fallback='true').lower() == 'true',
                 "version_info": version_info,
@@ -197,7 +197,7 @@ class PolarCloudPlugin:
                     "username": self.config.get('polar_cloud', 'username', fallback=''),
                     "machine_type": self.config.get('polar_cloud', 'machine_type', fallback='Cartesian'),
                     "printer_type": self.config.get('polar_cloud', 'printer_type', fallback='Cartesian'),
-                    "manufacturer": self.config.get('polar_cloud', 'manufacturer', fallback='generic'),
+                    "manufacturer": self.config.get('polar_cloud', 'manufacturer', fallback='Klipper Generic'),
                     "max_image_size": self.config.get('polar_cloud', 'max_image_size', fallback='150000'),
                     "verbose": self.config.get('polar_cloud', 'verbose', fallback='false'),
                     "serial_number": self.config.get('polar_cloud', 'serial_number', fallback='')
