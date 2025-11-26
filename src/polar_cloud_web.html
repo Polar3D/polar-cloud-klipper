@@ -155,6 +155,12 @@
             transition: all 0.3s ease;
         }
 
+        /* Style dropdown options for Windows/Chrome compatibility */
+        select option {
+            background: #2a2a2a;
+            color: #ffffff;
+        }
+
         input:focus,
         select:focus {
             outline: none;
@@ -388,10 +394,10 @@
                     <div>
                         <label for="manufacturer">Manufacturer</label>
                         <select id="manufacturer">
-                            <option value="generic">Generic Klipper</option>
-                            <option value="elegoo">Elegoo</option>
-                            <option value="creality">Creality</option>
-                            <option value="anycubic">Anycubic</option>
+                            <option value="Klipper Generic">Generic Klipper</option>
+                            <option value="Elegoo">Elegoo</option>
+                            <option value="Creality">Creality</option>
+                            <option value="Anycubic">Anycubic</option>
                         </select>
                     </div>
                     <div>
@@ -855,14 +861,15 @@
 
                 // Filter based on manufacturer
                 const manufacturer = manufacturerSelect.value;
-                if (manufacturer && manufacturer !== 'generic') {
+                const manufacturerLower = manufacturer ? manufacturer.toLowerCase() : '';
+                if (manufacturer && manufacturerLower !== 'klipper generic') {
                     printerMakes = printerMakes.filter(make => {
                         const makeLower = make.toLowerCase();
-                        if (manufacturer === 'elegoo') {
+                        if (manufacturerLower === 'elegoo') {
                             return makeLower.includes('elegoo') || makeLower.includes('neptune');
-                        } else if (manufacturer === 'creality') {
+                        } else if (manufacturerLower === 'creality') {
                             return makeLower.includes('creality') || makeLower.includes('ender') || makeLower.includes('cr-');
-                        } else if (manufacturer === 'anycubic') {
+                        } else if (manufacturerLower === 'anycubic') {
                             return makeLower.includes('anycubic') || makeLower.includes('kobra') || makeLower.includes('vyper') || makeLower.includes('mega') || makeLower.includes('chiron');
                         }
                         return true;
