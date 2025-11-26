@@ -394,10 +394,10 @@
                     <div>
                         <label for="manufacturer">Manufacturer</label>
                         <select id="manufacturer">
-                            <option value="Klipper Generic">Generic Klipper</option>
-                            <option value="Elegoo">Elegoo</option>
-                            <option value="Creality">Creality</option>
-                            <option value="Anycubic">Anycubic</option>
+                            <option value="kl">Generic Klipper</option>
+                            <option value="el">Elegoo</option>
+                            <option value="cre">Creality</option>
+                            <option value="ac">Anycubic</option>
                         </select>
                     </div>
                     <div>
@@ -859,17 +859,16 @@
                 // Extract printer types from API response
                 let printerMakes = data.printerMakes || [];
 
-                // Filter based on manufacturer
+                // Filter based on manufacturer code
                 const manufacturer = manufacturerSelect.value;
-                const manufacturerLower = manufacturer ? manufacturer.toLowerCase() : '';
-                if (manufacturer && manufacturerLower !== 'klipper generic') {
+                if (manufacturer && manufacturer !== 'kl') {
                     printerMakes = printerMakes.filter(make => {
                         const makeLower = make.toLowerCase();
-                        if (manufacturerLower === 'elegoo') {
+                        if (manufacturer === 'el') {
                             return makeLower.includes('elegoo') || makeLower.includes('neptune');
-                        } else if (manufacturerLower === 'creality') {
+                        } else if (manufacturer === 'cre') {
                             return makeLower.includes('creality') || makeLower.includes('ender') || makeLower.includes('cr-');
-                        } else if (manufacturerLower === 'anycubic') {
+                        } else if (manufacturer === 'ac') {
                             return makeLower.includes('anycubic') || makeLower.includes('kobra') || makeLower.includes('vyper') || makeLower.includes('mega') || makeLower.includes('chiron');
                         }
                         return true;
