@@ -470,7 +470,7 @@ class PolarCloudService:
                     'pin': '',
                     'machine_type': 'Cartesian',
                     'printer_type': 'Cartesian',
-                    'manufacturer': 'Klipper Generic',
+                    'manufacturer': 'kl',
                     'verbose': 'false',
                     'max_image_size': '150000',
                     'webcam_enabled': 'true'
@@ -501,7 +501,7 @@ class PolarCloudService:
                 "username": self.config.get('polar_cloud', 'username', fallback=''),
                 "machine_type": self.config.get('polar_cloud', 'machine_type', fallback='Cartesian'),
                 "printer_type": self.config.get('polar_cloud', 'printer_type', fallback='Cartesian'),
-                "manufacturer": self.config.get('polar_cloud', 'manufacturer', fallback='Klipper Generic'),
+                "manufacturer": self.config.get('polar_cloud', 'manufacturer', fallback='kl'),
                 "last_update": datetime.now().isoformat(),
                 "challenge": self.challenge or "",
                 "webcam_enabled": self.config.get('polar_cloud', 'webcam_enabled', fallback='true').lower() == 'true',
@@ -1232,18 +1232,9 @@ class PolarCloudService:
                 format=serialization.PublicFormat.SubjectPublicKeyInfo
             ).decode('utf-8')
             
-            # Get manufacturer code
-            manufacturer = self.config.get('polar_cloud', 'manufacturer', fallback='Klipper Generic').lower()
+            # Get manufacturer code (stored directly as kl, el, cre, ac)
+            mfg_code = self.config.get('polar_cloud', 'manufacturer', fallback='kl')
 
-            # Map manufacturer to code
-            mfg_code = 'kl'  # Default to generic Klipper
-            if 'elegoo' in manufacturer:
-                mfg_code = 'el'
-            elif 'creality' in manufacturer:
-                mfg_code = 'cr'
-            elif 'anycubic' in manufacturer:
-                mfg_code = 'ac'
-                
             registration_data = {
                 "mfg": mfg_code,
                 "email": username,
@@ -1278,15 +1269,8 @@ class PolarCloudService:
             # Get webcam transformation settings to inform the web browser
             webcam_settings = await self.get_webcam_settings()
             
-            # Get manufacturer code for mfgSn
-            manufacturer = self.config.get('polar_cloud', 'manufacturer', fallback='Klipper Generic').lower()
-            mfg_code = 'kl'  # Default to generic Klipper
-            if 'elegoo' in manufacturer:
-                mfg_code = 'el'
-            elif 'creality' in manufacturer:
-                mfg_code = 'cr'
-            elif 'anycubic' in manufacturer:
-                mfg_code = 'ac'
+            # Get manufacturer code (stored directly as kl, el, cre, ac)
+            mfg_code = self.config.get('polar_cloud', 'manufacturer', fallback='kl')
 
             hello_data = {
                 "serialNumber": self.serial_number,

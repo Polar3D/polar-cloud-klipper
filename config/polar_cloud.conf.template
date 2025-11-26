@@ -32,8 +32,8 @@ machine_type = Cartesian
 # or check https://polar3d.com/api/v1/printer_makes for the full list
 printer_type = Cartesian
 
-# Manufacturer: Klipper Generic, Elegoo, Creality, Anycubic
-manufacturer = Klipper Generic
+# Manufacturer code: kl (Generic Klipper), el (Elegoo), cre (Creality), ac (Anycubic)
+manufacturer = kl
 
 # Image Settings
 max_image_size = 150000
