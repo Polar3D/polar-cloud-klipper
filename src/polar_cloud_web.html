@@ -459,6 +459,21 @@
         const loading = document.getElementById('loading');
         const message = document.getElementById('message');
 
+        // Helper to normalize manufacturer values (handles old config formats)
+        function normalizeManufacturer(value) {
+            if (!value) return 'kl';
+            const lower = value.toLowerCase();
+            if (lower === 'kl' || lower === 'el' || lower === 'cre' || lower === 'ac') {
+                return lower;
+            }
+            // Map old values to new codes
+            if (lower === 'generic' || lower.includes('klipper')) return 'kl';
+            if (lower === 'elegoo' || lower.includes('elegoo')) return 'el';
+            if (lower === 'creality' || lower.includes('creality')) return 'cre';
+            if (lower === 'anycubic' || lower.includes('anycubic')) return 'ac';
+            return 'kl';
+        }
+
         // Event Listeners
         connectBtn.addEventListener('click', handleConnect);
         disconnectBtn.addEventListener('click', handleDisconnect);
@@ -512,7 +527,7 @@
                     if (formData.username) usernameInput.value = formData.username;
                     if (formData.pin) pinInput.value = formData.pin;
                     if (formData.machine_type) machineTypeSelect.value = formData.machine_type;
-                    if (formData.manufacturer) manufacturerSelect.value = formData.manufacturer;
+                    if (formData.manufacturer) manufacturerSelect.value = normalizeManufacturer(formData.manufacturer);
                     // Note: printer_type will be set after loadPrinterTypes() completes
 
                     // Store the printer type to be set later
@@ -655,10 +670,13 @@
                 printerTypeSelect.value = currentStatus.printer_type;
             }
 
-            if (currentStatus.manufacturer && (!manufacturerSelect.value || currentStatus.manufacturer !== manufacturerSelect.value)) {
-                manufacturerSelect.value = currentStatus.manufacturer;
-                // Reload printer types since manufacturer changed
-                loadPrinterTypes();
+            if (currentStatus.manufacturer) {
+                const normalizedMfg = normalizeManufacturer(currentStatus.manufacturer);
+                if (!manufacturerSelect.value || manufacturerSelect.value !== normalizedMfg) {
+                    manufacturerSelect.value = normalizedMfg;
+                    // Reload printer types since manufacturer changed
+                    loadPrinterTypes();
+                }
             }
 
             // Save current form state after updating from server
