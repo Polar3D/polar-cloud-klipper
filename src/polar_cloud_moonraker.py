@@ -140,10 +140,13 @@ class PolarCloudPlugin:
             machine_type = web_request.get_str('machine_type', 'Cartesian')
             printer_type = web_request.get_str('printer_type', 'Cartesian')
             manufacturer = web_request.get_str('manufacturer', 'generic')
-            
+
             if not username or not pin:
                 return {"error": "Username and PIN are required"}
-            
+
+            # Reload config first to preserve any values set by the service (e.g., serial_number)
+            self.load_config()
+
             # Update config
             self.config['polar_cloud']['username'] = username
             self.config['polar_cloud']['pin'] = pin
