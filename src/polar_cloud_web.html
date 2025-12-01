@@ -734,19 +734,28 @@
                 const result = await response.json();
 
                 if (result.success) {
-                    showMessage('Registration initiated. The service is connecting to Polar Cloud - check the status above in a few seconds.', 'success');
+                    showMessage('Registration initiated. The service is connecting to Polar Cloud...', 'success');
                     // Poll for status updates to show connection result
                     let pollCount = 0;
                     const pollInterval = setInterval(async () => {
                         pollCount++;
                         await loadStatus();
-                        // Stop polling after 30 seconds or if we see an error/success
-                        if (pollCount >= 15 || currentStatus.authenticated || currentStatus.last_error) {
+                        // Stop polling after 30 seconds or if we see success/error
+                        const isSuccess = currentStatus.authenticated || currentStatus.registered;
+                        const hasError = currentStatus.last_error;
+                        if (pollCount >= 15 || isSuccess || hasError) {
                             clearInterval(pollInterval);
-                            if (currentStatus.authenticated) {
+                            if (isSuccess && !hasError) {
                                 showMessage('Successfully connected to Polar Cloud!', 'success');
-                            } else if (currentStatus.last_error) {
+                            } else if (hasError) {
                                 showMessage('Connection failed: ' + currentStatus.last_error + '. Click "Export Logs" for more details.', 'error');
+                            } else {
+                                // Timeout - check final status
+                                if (currentStatus.service_status === 'active') {
+                                    showMessage('Registration in progress. Check the Connection Status above for results.', 'success');
+                                } else {
+                                    showMessage('Service not responding. Click "Export Logs" for diagnostic information.', 'error');
+                                }
                             }
                         }
                     }, 2000);
