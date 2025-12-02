@@ -43,11 +43,14 @@ Your system should have:
 ### Quick Install
 
 ```bash
-# Download the installer
+curl -sSL https://polar3d.com/install-klipper.sh | bash
+```
+
+Or manually:
+
+```bash
 git clone https://github.com/Polar3D/polar-cloud-klipper.git
 cd polar-cloud-klipper
-
-# Run the installer
 ./install.sh
 ```
 
