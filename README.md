@@ -54,6 +54,23 @@ cd polar-cloud-klipper
 ./install.sh
 ```
 
+### Creality K1/K1C/K1 Max
+
+These printers have a limited shell environment and require bash to be installed:
+
+```bash
+# Install bash if not present
+opkg update && opkg install bash git git-http
+
+# Clone and install
+cd /usr/data
+git clone https://github.com/Polar3D/polar-cloud-klipper.git
+cd polar-cloud-klipper
+bash install.sh
+```
+
+> **Note:** Requires rooted firmware with opkg package manager access.
+
 The installer will:
 1. Detect your system configuration (user, paths, etc.)
 2. Install required Python dependencies
