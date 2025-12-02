@@ -22,6 +22,9 @@ All notable changes to this project will be documented in this file.
 - Startup via `/etc/init.d/S99polar_cloud`
 - Logs stored at `/usr/data/printer_data/logs/polar_cloud.log`
 - Works with K1's pre-installed Moonraker at `/usr/data/moonraker`
+- Smart cryptography handling: uses system packages or copies from Moonraker's environment
+- Falls back to cryptography 3.3.2 (last version without Rust requirement) if needed
+- Installs packages individually with graceful failure handling
 
 ## [1.1.0] - 2025-11-26
 

@@ -1,0 +1,24 @@
+# Requirements for Creality K1/K1C/K1 Max
+# These printers use MIPS architecture with Python 3.8
+# and have limited build capabilities (no Rust compiler)
+
+# Socket.IO client for Polar Cloud communication
+python-socketio[client]>=5.0
+
+# Use system cryptography if available, otherwise try older version
+# that doesn't require Rust to build (3.3.2 is last non-Rust version)
+# If this fails, the install script will use system packages
+cryptography>=3.0,<3.4; python_version < "3.9"
+cryptography>=3.0; python_version >= "3.9"
+
+# Image processing for webcam
+Pillow>=8.0
+
+# HTTP requests
+requests>=2.25
+
+# Configuration parsing
+configparser>=5.0
+
+# Async HTTP for Socket.IO
+aiohttp>=3.7
