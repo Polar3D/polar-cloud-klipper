@@ -18,9 +18,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # K1 specific paths
 INSTALL_DIR="/usr/data/polar-cloud-klipper"
 PRINTER_DATA_DIR="/usr/data/printer_data"
-MOONRAKER_DIR="/usr/data/moonraker"
-MOONRAKER_COMPONENTS="/usr/data/moonraker/moonraker/components"
 VENV_DIR="$INSTALL_DIR/venv"
+
+# Moonraker paths vary by K1 firmware version
+# Stock firmware: /usr/share/moonraker
+# Some mods: /usr/data/moonraker
+MOONRAKER_DIR=""
+MOONRAKER_COMPONENTS=""
 
 # Configuration
 POLAR_SERVER="https://printer4.polar3d.com"
@@ -59,12 +63,44 @@ check_k1_environment() {
         exit 1
     fi
 
-    # Check for Moonraker
-    if [ ! -d "$MOONRAKER_DIR" ]; then
-        print_error "Moonraker not found at $MOONRAKER_DIR"
+    # Check disk space (need at least 50MB free in /usr/data)
+    FREE_SPACE=$(df /usr/data 2>/dev/null | awk 'NR==2 {print $4}')
+    if [ -n "$FREE_SPACE" ] && [ "$FREE_SPACE" -lt 51200 ]; then
+        print_error "Not enough disk space in /usr/data"
+        print_info "Available: $((FREE_SPACE / 1024)) MB, Required: ~50 MB"
+        print_info "Try cleaning up old files or removing unused packages"
+        exit 1
+    fi
+    print_success "Disk space check passed"
+
+    # Find Moonraker installation - check multiple possible locations
+    MOONRAKER_LOCATIONS="/usr/share/moonraker /usr/data/moonraker /usr/share/moonraker-org"
+    for loc in $MOONRAKER_LOCATIONS; do
+        if [ -d "$loc" ]; then
+            MOONRAKER_DIR="$loc"
+            print_info "Found Moonraker at: $MOONRAKER_DIR"
+            break
+        fi
+    done
+
+    if [ -z "$MOONRAKER_DIR" ]; then
+        print_error "Moonraker not found!"
+        print_info "Searched: $MOONRAKER_LOCATIONS"
         print_info "Please ensure Moonraker is installed on your K1"
         exit 1
     fi
+
+    # Find components directory
+    if [ -d "$MOONRAKER_DIR/moonraker/components" ]; then
+        MOONRAKER_COMPONENTS="$MOONRAKER_DIR/moonraker/components"
+    elif [ -d "$MOONRAKER_DIR/components" ]; then
+        MOONRAKER_COMPONENTS="$MOONRAKER_DIR/components"
+    else
+        print_error "Moonraker components directory not found in $MOONRAKER_DIR"
+        print_info "Looking for: $MOONRAKER_DIR/moonraker/components or $MOONRAKER_DIR/components"
+        exit 1
+    fi
+    print_success "Found Moonraker components at: $MOONRAKER_COMPONENTS"
 
     # Check for printer_data
     if [ ! -d "$PRINTER_DATA_DIR" ]; then
@@ -170,9 +206,18 @@ install_venv() {
 
     $VENV_CMD "$VENV_DIR"
 
-    # Upgrade pip (but not too new - older pip works better on K1)
+    # Configure pip - use /usr/data for temp files since /tmp is only 100MB RAM disk
     print_info "Configuring pip..."
-    "$VENV_DIR/bin/pip" install --upgrade 'pip<24' 2>/dev/null || true
+    export TMPDIR="/usr/data/tmp"
+    mkdir -p "$TMPDIR"
+
+    "$VENV_DIR/bin/pip" config set global.cache-dir false 2>/dev/null || true
+    "$VENV_DIR/bin/pip" install --no-cache-dir --upgrade 'pip<24' 2>/dev/null || true
+
+    # Clean any existing pip cache to free space
+    rm -rf ~/.cache/pip 2>/dev/null || true
+    rm -rf /tmp/pip-* 2>/dev/null || true
+    rm -rf /usr/data/tmp/pip-* 2>/dev/null || true
 
     # Check if system has cryptography installed
     # Also check Moonraker's virtualenv since K1 already runs Moonraker
