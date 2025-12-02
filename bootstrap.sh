@@ -45,7 +45,15 @@ else
     cd "$INSTALL_DIR"
 fi
 
-# 3. Hand off to the actual installer
+# 3. Hand off to the appropriate installer
 echo "Starting installation..."
-chmod +x install.sh
-./install.sh
+
+# Detect K1/K1C/K1 Max and use appropriate installer
+if [ -d "/usr/data" ]; then
+    echo "Creality K1 series detected - using K1-specific installer..."
+    chmod +x install_k1.sh
+    ./install_k1.sh
+else
+    chmod +x install.sh
+    ./install.sh
+fi
