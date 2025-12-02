@@ -90,14 +90,21 @@ check_k1_environment() {
         exit 1
     fi
 
-    # Find components directory
-    if [ -d "$MOONRAKER_DIR/moonraker/components" ]; then
-        MOONRAKER_COMPONENTS="$MOONRAKER_DIR/moonraker/components"
-    elif [ -d "$MOONRAKER_DIR/components" ]; then
-        MOONRAKER_COMPONENTS="$MOONRAKER_DIR/components"
-    else
-        print_error "Moonraker components directory not found in $MOONRAKER_DIR"
-        print_info "Looking for: $MOONRAKER_DIR/moonraker/components or $MOONRAKER_DIR/components"
+    # Find components directory - K1 has nested structure: moonraker/moonraker/moonraker/components
+    COMPONENT_PATHS="$MOONRAKER_DIR/moonraker/moonraker/components $MOONRAKER_DIR/moonraker/components $MOONRAKER_DIR/components"
+    for comp_path in $COMPONENT_PATHS; do
+        if [ -d "$comp_path" ]; then
+            MOONRAKER_COMPONENTS="$comp_path"
+            break
+        fi
+    done
+
+    if [ -z "$MOONRAKER_COMPONENTS" ]; then
+        print_error "Moonraker components directory not found"
+        print_info "Searched paths:"
+        for comp_path in $COMPONENT_PATHS; do
+            print_info "  - $comp_path"
+        done
         exit 1
     fi
     print_success "Found Moonraker components at: $MOONRAKER_COMPONENTS"
