@@ -479,16 +479,28 @@ EOF
     else
         print_info "Update manager already configured for Polar Cloud"
     fi
+
+    # Add polar_cloud to moonraker.asvc for service management permission
+    local asvc_file="$PRINTER_DATA_DIR/moonraker.asvc"
+    if [ -f "$asvc_file" ]; then
+        if ! grep -q "polar_cloud" "$asvc_file"; then
+            echo "polar_cloud" >> "$asvc_file"
+            print_success "Added polar_cloud to moonraker.asvc for service management"
+        fi
+    else
+        # Create the file if it doesn't exist
+        echo "polar_cloud" > "$asvc_file"
+        print_success "Created moonraker.asvc with polar_cloud service"
+    fi
 }
 
 # Configure nginx
 configure_nginx() {
     print_info "Configuring nginx for Polar Cloud web interface..."
 
-    # K1 nginx config is typically at /usr/data/nginx/nginx/nginx.conf
-    # or /etc/nginx/nginx.conf
+    # K1 nginx config is at /usr/data/nginx/nginx/nginx.conf
     local nginx_conf=""
-    local nginx_configs="/usr/data/nginx/nginx/sites/fluidd.conf /etc/nginx/sites-enabled/fluidd /etc/nginx/nginx.conf"
+    local nginx_configs="/usr/data/nginx/nginx/nginx.conf /etc/nginx/nginx.conf"
 
     for conf in $nginx_configs; do
         if [ -f "$conf" ]; then
@@ -514,47 +526,74 @@ configure_nginx() {
     # Backup original
     cp "$nginx_conf" "${nginx_conf}.polar_backup"
 
-    # For K1, we need to add a location block
-    # This is a simplified approach - insert before the last }
+    # K1 nginx config structure - need to add location blocks inside the server block
+    # Look for the line with "location /" and insert before it
 
-    local nginx_snippet="
-    # Polar Cloud web interface
-    location = /polar-cloud {
-        return 301 \$scheme://\$host/polar-cloud/;
-    }
+    # Create a temporary file with the new configuration
+    local temp_file="/usr/data/tmp/nginx_polar_temp.conf"
 
-    location /polar-cloud/ {
-        alias $INSTALL_DIR/web/;
-        try_files \$uri \$uri/ /polar-cloud/index.html;
-    }
-"
-
-    # Try to add the configuration
-    # Find the server block and add before the closing brace
-    if grep -q "server {" "$nginx_conf"; then
-        # Use sed to insert before the last closing brace of server block
-        # This is a simplified approach
-        sed -i "/^[[:space:]]*location.*{/,/^[[:space:]]*}/ {
-            /^[[:space:]]*}/ {
-                i\\
-$nginx_snippet
-            }
-        }" "$nginx_conf" 2>/dev/null || {
-            # Fallback: append to file and let nginx figure it out
-            print_warning "Could not automatically configure nginx"
-            print_info "Please manually add this to your nginx server block:"
-            echo "$nginx_snippet"
+    # Check if we can find a good insertion point (before "location /")
+    if grep -q "location /" "$nginx_conf"; then
+        # Insert the polar-cloud location blocks before the first "location /" line
+        awk '
+        /location \// && !inserted {
+            print "        # Polar Cloud web interface"
+            print "        location = /polar-cloud {"
+            print "            return 301 $scheme://$host:4408/polar-cloud/;"
+            print "        }"
+            print ""
+            print "        location /polar-cloud/ {"
+            print "            alias /usr/data/polar-cloud-klipper/web/;"
+            print "            index index.html;"
+            print "            try_files $uri $uri/ /polar-cloud/index.html;"
+            print "        }"
+            print ""
+            inserted = 1
         }
+        { print }
+        ' "$nginx_conf" > "$temp_file"
+
+        # Check if the temp file was created properly
+        if [ -s "$temp_file" ]; then
+            mv "$temp_file" "$nginx_conf"
+            print_success "Added Polar Cloud location blocks to nginx config"
+        else
+            print_warning "Failed to create nginx configuration"
+            rm -f "$temp_file"
+        fi
+    else
+        print_warning "Could not find insertion point in nginx config"
+        print_info "Please manually add the following inside your server block:"
+        echo ""
+        echo "        # Polar Cloud web interface"
+        echo "        location = /polar-cloud {"
+        echo "            return 301 \$scheme://\$host:4408/polar-cloud/;"
+        echo "        }"
+        echo ""
+        echo "        location /polar-cloud/ {"
+        echo "            alias /usr/data/polar-cloud-klipper/web/;"
+        echo "            index index.html;"
+        echo "            try_files \$uri \$uri/ /polar-cloud/index.html;"
+        echo "        }"
+        return
     fi
 
     # Test and reload nginx
     if nginx -t 2>/dev/null; then
-        /etc/init.d/S50nginx restart 2>/dev/null || nginx -s reload 2>/dev/null || true
-        print_success "Nginx configuration updated"
+        # K1 uses different nginx control methods
+        if [ -x "/etc/init.d/S50nginx" ]; then
+            /etc/init.d/S50nginx restart 2>/dev/null
+        elif [ -x "/usr/data/nginx/nginx/sbin/nginx" ]; then
+            /usr/data/nginx/nginx/sbin/nginx -s reload 2>/dev/null
+        else
+            nginx -s reload 2>/dev/null || killall -HUP nginx 2>/dev/null || true
+        fi
+        print_success "Nginx configuration updated and reloaded"
     else
         print_warning "Nginx configuration test failed, restoring backup"
         cp "${nginx_conf}.polar_backup" "$nginx_conf"
         print_info "You may need to manually configure nginx"
+        print_info "Please add the polar-cloud location blocks to your nginx server block"
     fi
 }
 
@@ -594,7 +633,7 @@ print_instructions() {
     print_success "Polar Cloud installation complete!"
     echo ""
     print_info "Next steps:"
-    echo "1. Navigate to http://${ip_addr:-your-printer-ip}/polar-cloud/"
+    echo "1. Navigate to http://${ip_addr:-your-printer-ip}:4408/polar-cloud/"
     echo "2. Enter your Polar Cloud credentials"
     echo "3. Select your printer type and configure settings"
     echo ""
