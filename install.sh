@@ -662,10 +662,14 @@ print_instructions() {
 main() {
     print_header
     
-    # Check if running as root
+    # Check if running as root (allow on K1/K1C where root is normal)
     if [ "$EUID" -eq 0 ]; then
-        print_error "Please run this script as a normal user, not as root!"
-        exit 1
+        if [ -d "/usr/data" ]; then
+            print_warning "Running as root on Creality K1/K1C - this is expected"
+        else
+            print_error "Please run this script as a normal user, not as root!"
+            exit 1
+        fi
     fi
     
     # Track installation status
