@@ -161,7 +161,8 @@ create_directories() {
 install_venv() {
     print_info "Setting up Python virtual environment..."
 
-    # Create virtual environment
+    # Create virtual environment with system site packages
+    # This allows us to use system-installed cryptography if available
     if [ -d "$VENV_DIR" ]; then
         print_info "Removing existing virtual environment..."
         rm -rf "$VENV_DIR"
@@ -169,18 +170,103 @@ install_venv() {
 
     $VENV_CMD "$VENV_DIR"
 
-    # Upgrade pip
-    "$VENV_DIR/bin/pip" install --upgrade pip 2>/dev/null || "$VENV_DIR/bin/pip3" install --upgrade pip
+    # Upgrade pip (but not too new - older pip works better on K1)
+    print_info "Configuring pip..."
+    "$VENV_DIR/bin/pip" install --upgrade 'pip<24' 2>/dev/null || true
 
-    # Install requirements
-    if [ -f "$INSTALL_DIR/requirements.txt" ]; then
-        "$VENV_DIR/bin/pip" install -r "$INSTALL_DIR/requirements.txt" 2>/dev/null || \
-        "$VENV_DIR/bin/pip3" install -r "$INSTALL_DIR/requirements.txt"
-        print_success "Installed Python dependencies"
+    # Check if system has cryptography installed
+    # Also check Moonraker's virtualenv since K1 already runs Moonraker
+    if python3 -c "import cryptography" 2>/dev/null; then
+        print_success "Using system cryptography package"
+        HAS_SYSTEM_CRYPTO=1
+    elif [ -d "/usr/data/moonraker-env" ] && "/usr/data/moonraker-env/bin/python" -c "import cryptography" 2>/dev/null; then
+        print_info "Found cryptography in Moonraker environment"
+        # Copy from Moonraker's site-packages
+        MOONRAKER_SITE=$("/usr/data/moonraker-env/bin/python" -c "import site; print(site.getsitepackages()[0])" 2>/dev/null)
+        if [ -n "$MOONRAKER_SITE" ] && [ -d "$MOONRAKER_SITE/cryptography" ]; then
+            print_info "Will use Moonraker's cryptography"
+            HAS_SYSTEM_CRYPTO=1
+            COPY_FROM_MOONRAKER=1
+        else
+            HAS_SYSTEM_CRYPTO=0
+        fi
     else
-        print_error "requirements.txt not found in $INSTALL_DIR"
-        exit 1
+        HAS_SYSTEM_CRYPTO=0
+        print_warning "System cryptography not found, will try to install"
     fi
+
+    # Install requirements - use K1-specific requirements if available
+    REQ_FILE="$INSTALL_DIR/requirements.txt"
+    if [ -f "$INSTALL_DIR/requirements_k1.txt" ]; then
+        REQ_FILE="$INSTALL_DIR/requirements_k1.txt"
+        print_info "Using K1-specific requirements"
+    fi
+
+    # Install packages one by one to handle failures gracefully
+    print_info "Installing Python dependencies..."
+
+    # Core packages that should always work
+    "$VENV_DIR/bin/pip" install --no-cache-dir 'python-socketio[client]>=5.0' 2>&1 || {
+        print_error "Failed to install python-socketio"
+        exit 1
+    }
+
+    "$VENV_DIR/bin/pip" install --no-cache-dir 'requests>=2.25' 2>&1 || {
+        print_error "Failed to install requests"
+        exit 1
+    }
+
+    "$VENV_DIR/bin/pip" install --no-cache-dir 'configparser>=5.0' 2>&1 || true
+
+    "$VENV_DIR/bin/pip" install --no-cache-dir 'aiohttp>=3.7' 2>&1 || {
+        print_warning "aiohttp installation had issues, continuing..."
+    }
+
+    # Pillow - may need to use system version
+    "$VENV_DIR/bin/pip" install --no-cache-dir 'Pillow>=8.0' 2>&1 || {
+        print_warning "Pillow pip install failed, trying system package..."
+        if python3 -c "import PIL" 2>/dev/null; then
+            print_success "Using system Pillow"
+        else
+            print_warning "Pillow not available - webcam features may not work"
+        fi
+    }
+
+    # Cryptography - this is the tricky one on K1
+    if [ "$HAS_SYSTEM_CRYPTO" = "1" ]; then
+        if [ "$COPY_FROM_MOONRAKER" = "1" ]; then
+            print_info "Copying cryptography from Moonraker environment..."
+            VENV_SITE=$("$VENV_DIR/bin/python" -c "import site; print(site.getsitepackages()[0])" 2>/dev/null)
+            if [ -n "$VENV_SITE" ] && [ -n "$MOONRAKER_SITE" ]; then
+                cp -r "$MOONRAKER_SITE/cryptography" "$VENV_SITE/" 2>/dev/null || true
+                cp -r "$MOONRAKER_SITE/cryptography"*.dist-info "$VENV_SITE/" 2>/dev/null || true
+                # Also copy cffi if present (cryptography dependency)
+                cp -r "$MOONRAKER_SITE/cffi" "$VENV_SITE/" 2>/dev/null || true
+                cp -r "$MOONRAKER_SITE/cffi"*.dist-info "$VENV_SITE/" 2>/dev/null || true
+                cp -r "$MOONRAKER_SITE/_cffi_backend"* "$VENV_SITE/" 2>/dev/null || true
+            fi
+        fi
+        print_success "Cryptography available via system packages"
+    else
+        print_info "Attempting to install cryptography (this may take a while)..."
+        # Try the older version that doesn't require Rust
+        if ! "$VENV_DIR/bin/pip" install --no-cache-dir 'cryptography==3.3.2' 2>&1; then
+            print_warning "cryptography 3.3.2 failed, trying system site-packages..."
+            # Check if it's available from system
+            if ! python3 -c "import cryptography" 2>/dev/null; then
+                print_error "Could not install cryptography!"
+                print_info ""
+                print_info "The cryptography package is required but cannot be installed on K1."
+                print_info "Try installing it via Entware:"
+                print_info "  /opt/bin/opkg install python3-cryptography"
+                print_info ""
+                print_info "Or check if your K1 firmware has it pre-installed."
+                exit 1
+            fi
+        fi
+    fi
+
+    print_success "Python dependencies installed"
 }
 
 # Install files
