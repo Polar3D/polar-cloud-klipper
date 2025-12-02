@@ -56,20 +56,40 @@ cd polar-cloud-klipper
 
 ### Creality K1/K1C/K1 Max
 
-These printers have a limited shell environment and require bash to be installed:
+These printers have a custom firmware environment. A dedicated K1-specific installer is included.
+
+**Prerequisites:**
+- Rooted K1 firmware with SSH access
+- [Entware](https://github.com/Guilouz/Creality-K1-and-K1-Max/wiki/Entware) package manager installed
+- Git installed via Entware
+
+**Installation:**
 
 ```bash
-# Install bash if not present
-opkg update && opkg install bash git git-http
+# 1. SSH into your K1 printer
+ssh root@<printer-ip>
 
-# Clone and install
+# 2. Install git if not already installed
+/opt/bin/opkg update && /opt/bin/opkg install git git-http
+
+# 3. Clone and install
 cd /usr/data
 git clone https://github.com/Polar3D/polar-cloud-klipper.git
 cd polar-cloud-klipper
-bash install.sh
+./install_k1.sh
 ```
 
-> **Note:** Requires rooted firmware with opkg package manager access.
+**After installation:**
+- Access the web interface at `http://<printer-ip>/polar-cloud/`
+- Use `/usr/data/polar_cloud_service.sh status` to check service status
+- Logs are at `/usr/data/printer_data/logs/polar_cloud.log`
+
+**Uninstalling on K1:**
+```bash
+/usr/data/polar-cloud-klipper/uninstall_k1.sh
+```
+
+> **Note:** The K1 installer uses the system Python and creates service scripts compatible with the K1's init system (not systemd).
 
 The installer will:
 1. Detect your system configuration (user, paths, etc.)
@@ -110,6 +130,7 @@ POST /printer/polar_cloud/config
 
 ### Service Management
 
+**Standard Klipper installations:**
 ```bash
 # Check service status
 sudo systemctl status polar_cloud
@@ -119,6 +140,18 @@ sudo journalctl -u polar_cloud -f
 
 # Restart service
 sudo systemctl restart polar_cloud
+```
+
+**Creality K1/K1C/K1 Max:**
+```bash
+# Check service status
+/usr/data/polar_cloud_service.sh status
+
+# View logs
+tail -f /usr/data/printer_data/logs/polar_cloud.log
+
+# Restart service
+/usr/data/polar_cloud_service.sh restart
 ```
 
 ### Updating
@@ -257,8 +290,11 @@ This will:
 
 ```
 polar-cloud-klipper/
-├── install.sh              # Main installer script
-├── uninstall.sh            # Removal script
+├── bootstrap.sh            # One-liner bootstrap script
+├── install.sh              # Main installer (Raspberry Pi, etc.)
+├── install_k1.sh           # Creality K1 series installer
+├── uninstall.sh            # Standard removal script
+├── uninstall_k1.sh         # K1 series removal script
 ├── requirements.txt        # Python dependencies
 ├── src/                    # Source files
 │   ├── polar_cloud.py     # Main service
