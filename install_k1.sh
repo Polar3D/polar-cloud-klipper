@@ -603,12 +603,32 @@ start_services() {
 
     # Restart Moonraker to load plugin
     print_info "Restarting Moonraker..."
-    /etc/init.d/S56moonraker_service restart 2>/dev/null || \
-    /usr/data/moonraker/scripts/moonraker-start.sh restart 2>/dev/null || \
-    killall -HUP moonraker 2>/dev/null || true
 
+    # Try multiple methods to restart Moonraker on K1
+    if [ -x "/etc/init.d/S56moonraker_service" ]; then
+        /etc/init.d/S56moonraker_service restart
+    elif [ -x "/usr/data/moonraker/scripts/moonraker-start.sh" ]; then
+        /usr/data/moonraker/scripts/moonraker-start.sh restart
+    else
+        # Fallback: stop and start manually
+        killall moonraker 2>/dev/null || true
+        sleep 2
+        # Try to find and run moonraker
+        if [ -f "/usr/data/moonraker-env/bin/python" ]; then
+            cd /usr/data/moonraker
+            nohup /usr/data/moonraker-env/bin/python -m moonraker > /dev/null 2>&1 &
+        fi
+    fi
+
+    # Wait and verify Moonraker is running
     sleep 3
-    print_success "Moonraker restarted"
+    if ps | grep -v grep | grep -q moonraker; then
+        print_success "Moonraker is running"
+    else
+        print_warning "Moonraker may not have restarted properly"
+        print_info "Try: /etc/init.d/S56moonraker_service start"
+        print_info "Or reboot the printer after installation"
+    fi
 
     # Start Polar Cloud service
     print_info "Starting Polar Cloud service..."
