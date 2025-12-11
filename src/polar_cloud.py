@@ -209,8 +209,12 @@ class PolarCloudService:
         def welcome(data):
             """Handle welcome message with challenge"""
             try:
-                self.challenge = data.get("challenge") if isinstance(data, dict) else None
-                logger.info("Received welcome from Polar Cloud")
+                if isinstance(data, dict):
+                    self.challenge = data.get("challenge")
+                else:
+                    logger.warning(f"Welcome received non-dict data: {type(data)} = {data}")
+                    self.challenge = None
+                logger.info(f"Received welcome from Polar Cloud, challenge={'SET' if self.challenge else 'NONE'}")
 
                 # Reload config to ensure we have latest values
                 self.load_config()
