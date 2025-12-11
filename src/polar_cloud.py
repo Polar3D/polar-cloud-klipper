@@ -177,7 +177,8 @@ class PolarCloudService:
             logger.info("Connected to Polar Cloud Socket.IO server")
             self.connected = True
             self.hello_sent = False
-            self.challenge = None
+            # Don't clear challenge here - it may arrive before connect event completes
+            # self.challenge = None
             self.write_status_file()
 
         @self.sio.event
