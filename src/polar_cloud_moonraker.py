@@ -11,11 +11,29 @@ import asyncio
 import subprocess
 import json
 
+
+def get_printer_data_path():
+    """Get the printer_data path, handling K1 and standard installations."""
+    # K1 series uses /usr/data/printer_data
+    if os.path.exists('/usr/data/printer_data'):
+        return '/usr/data/printer_data'
+    # Standard installation uses ~/printer_data
+    return os.path.expanduser('~/printer_data')
+
+
+def is_k1_system():
+    """Check if running on K1 series (no systemd)."""
+    return os.path.exists('/usr/data/printer_data')
+
+
+PRINTER_DATA_PATH = get_printer_data_path()
+
+
 class PolarCloudPlugin:
     def __init__(self, config):
         self.server = config.get_server()
         self.name = config.get_name()
-        self.config_file = os.path.expanduser("~/printer_data/config/polar_cloud.conf")
+        self.config_file = os.path.join(PRINTER_DATA_PATH, 'config/polar_cloud.conf')
         self.config = configparser.ConfigParser()
         self.load_config()
         
@@ -86,15 +104,21 @@ class PolarCloudPlugin:
             self.load_config()
             
             # Check if service is running
-            result = subprocess.run(
-                ["systemctl", "is-active", "polar_cloud.service"],
-                capture_output=True, text=True
-            )
-            
-            service_status = "active" if result.returncode == 0 else "inactive"
-            
+            if is_k1_system():
+                result = subprocess.run(
+                    ["/usr/data/polar_cloud_service.sh", "status"],
+                    capture_output=True, text=True
+                )
+                service_status = "active" if "running" in result.stdout.lower() else "inactive"
+            else:
+                result = subprocess.run(
+                    ["systemctl", "is-active", "polar_cloud.service"],
+                    capture_output=True, text=True
+                )
+                service_status = "active" if result.returncode == 0 else "inactive"
+
             # Try to read real-time status from the service's status file
-            status_file = os.path.expanduser('~/printer_data/logs/polar_cloud_status.json')
+            status_file = os.path.join(PRINTER_DATA_PATH, 'logs/polar_cloud_status.json')
             realtime_status = {}
             try:
                 if os.path.exists(status_file):
@@ -157,11 +181,14 @@ class PolarCloudPlugin:
             
             # Restart service to pick up new config
             try:
-                subprocess.run(["systemctl", "restart", "polar_cloud.service"], check=True)
+                if is_k1_system():
+                    subprocess.run(["/usr/data/polar_cloud_service.sh", "restart"], check=True)
+                else:
+                    subprocess.run(["systemctl", "restart", "polar_cloud.service"], check=True)
             except subprocess.CalledProcessError as e:
                 logging.error(f"Error restarting polar cloud service: {e}")
                 return {"error": "Failed to restart service"}
-            
+
             return {"success": True, "message": "Registration initiated"}
             
         except Exception as e:
@@ -179,11 +206,14 @@ class PolarCloudPlugin:
             
             # Restart service
             try:
-                subprocess.run(["systemctl", "restart", "polar_cloud.service"], check=True)
+                if is_k1_system():
+                    subprocess.run(["/usr/data/polar_cloud_service.sh", "restart"], check=True)
+                else:
+                    subprocess.run(["systemctl", "restart", "polar_cloud.service"], check=True)
             except subprocess.CalledProcessError as e:
                 logging.error(f"Error restarting polar cloud service: {e}")
                 return {"error": "Failed to restart service"}
-            
+
             return {"success": True, "message": "Unregistered successfully"}
             
         except Exception as e:
@@ -213,14 +243,17 @@ class PolarCloudPlugin:
                         self.config['polar_cloud'][key] = value
                 
                 self.save_config()
-                
+
                 # Restart service if needed
                 try:
-                    subprocess.run(["systemctl", "restart", "polar_cloud.service"], check=True)
+                    if is_k1_system():
+                        subprocess.run(["/usr/data/polar_cloud_service.sh", "restart"], check=True)
+                    else:
+                        subprocess.run(["systemctl", "restart", "polar_cloud.service"], check=True)
                 except subprocess.CalledProcessError as e:
                     logging.error(f"Error restarting polar cloud service: {e}")
                     return {"error": "Failed to restart service"}
-                
+
                 return {"success": True, "message": "Configuration updated"}
                 
         except Exception as e:
@@ -298,27 +331,32 @@ class PolarCloudPlugin:
             # 3. Service Status
             logs.append("=== SERVICE STATUS ===")
             try:
-                result = subprocess.run(['systemctl', 'is-active', 'polar_cloud'], 
-                                      capture_output=True, text=True, timeout=5)
-                status = result.stdout.strip()
-                logs.append(f"Polar Cloud Service: {status}")
-                
-                if status == "active":
-                    # Get service details
-                    result = subprocess.run(['systemctl', 'status', 'polar_cloud', '--no-pager', '-l'], 
-                                          capture_output=True, text=True, timeout=10)
-                    logs.append("Service Details:")
-                    for line in result.stdout.split('\n')[:10]:  # First 10 lines
-                        if line.strip():
-                            logs.append(f"  {line}")
-                            
+                if is_k1_system():
+                    result = subprocess.run(['/usr/data/polar_cloud_service.sh', 'status'],
+                                          capture_output=True, text=True, timeout=5)
+                    logs.append(f"Polar Cloud Service: {result.stdout.strip()}")
+                else:
+                    result = subprocess.run(['systemctl', 'is-active', 'polar_cloud'],
+                                          capture_output=True, text=True, timeout=5)
+                    status = result.stdout.strip()
+                    logs.append(f"Polar Cloud Service: {status}")
+
+                    if status == "active":
+                        # Get service details
+                        result = subprocess.run(['systemctl', 'status', 'polar_cloud', '--no-pager', '-l'],
+                                              capture_output=True, text=True, timeout=10)
+                        logs.append("Service Details:")
+                        for line in result.stdout.split('\n')[:10]:  # First 10 lines
+                            if line.strip():
+                                logs.append(f"  {line}")
+
             except Exception as e:
                 logs.append(f"Service Status: Error checking - {e}")
             logs.append("")
-            
+
             # 4. Current Status File
             logs.append("=== CURRENT STATUS ===")
-            status_file = os.path.expanduser('~/printer_data/logs/polar_cloud_status.json')
+            status_file = os.path.join(PRINTER_DATA_PATH, 'logs/polar_cloud_status.json')
             try:
                 if os.path.exists(status_file):
                     with open(status_file, 'r') as f:
@@ -333,7 +371,7 @@ class PolarCloudPlugin:
             
             # 5. Configuration
             logs.append("=== CONFIGURATION ===")
-            config_file = os.path.expanduser('~/printer_data/config/polar_cloud.conf')
+            config_file = os.path.join(PRINTER_DATA_PATH, 'config/polar_cloud.conf')
             try:
                 if os.path.exists(config_file):
                     with open(config_file, 'r') as f:
@@ -351,24 +389,35 @@ class PolarCloudPlugin:
             except Exception as e:
                 logs.append(f"Configuration: Error reading - {e}")
             logs.append("")
-            
+
             # 6. Recent Service Logs
             logs.append("=== RECENT SERVICE LOGS (Last 200 lines) ===")
             try:
-                result = subprocess.run(['journalctl', '-u', 'polar_cloud', '-n', '200', '--no-pager'], 
-                                      capture_output=True, text=True, timeout=15)
-                if result.returncode == 0:
-                    logs.append(result.stdout)
+                log_file = os.path.join(PRINTER_DATA_PATH, 'logs/polar_cloud.log')
+                if is_k1_system() and os.path.exists(log_file):
+                    # K1 doesn't have journalctl, read from log file directly
+                    result = subprocess.run(['tail', '-n', '200', log_file],
+                                          capture_output=True, text=True, timeout=15)
+                    if result.returncode == 0:
+                        logs.append(result.stdout)
+                    else:
+                        logs.append("Unable to retrieve service logs")
                 else:
-                    logs.append("Unable to retrieve service logs")
+                    result = subprocess.run(['journalctl', '-u', 'polar_cloud', '-n', '200', '--no-pager'],
+                                          capture_output=True, text=True, timeout=15)
+                    if result.returncode == 0:
+                        logs.append(result.stdout)
+                    else:
+                        logs.append("Unable to retrieve service logs")
             except Exception as e:
                 logs.append(f"Service Logs: Error retrieving - {e}")
             logs.append("")
-            
+
             # 7. Moonraker Logs (last few lines mentioning polar_cloud)
             logs.append("=== MOONRAKER LOGS (Polar Cloud related) ===")
             try:
-                result = subprocess.run(['grep', '-i', 'polar', os.path.expanduser('~/printer_data/logs/moonraker.log')], 
+                moonraker_log = os.path.join(PRINTER_DATA_PATH, 'logs/moonraker.log')
+                result = subprocess.run(['grep', '-i', 'polar', moonraker_log],
                                       capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
                     # Get last 20 lines
@@ -407,16 +456,22 @@ class PolarCloudPlugin:
         """Get version information from git"""
         try:
             import subprocess
-            
+
+            # Determine install directory
+            if is_k1_system():
+                install_dir = "/usr/data/polar-cloud-klipper"
+            else:
+                install_dir = os.path.expanduser("~/polar-cloud-klipper")
+
             # Get current version from git tags
             result = subprocess.run(
                 ["git", "describe", "--tags", "--abbrev=0"],
-                cwd=os.path.expanduser("~/polar-cloud-klipper"),
+                cwd=install_dir,
                 capture_output=True,
                 text=True,
                 timeout=10
             )
-            
+
             if result.returncode == 0:
                 current_version = result.stdout.strip()
                 if current_version.startswith('v'):
@@ -425,7 +480,7 @@ class PolarCloudPlugin:
                 # Fallback to commit hash
                 result = subprocess.run(
                     ["git", "rev-parse", "--short", "HEAD"],
-                    cwd=os.path.expanduser("~/polar-cloud-klipper"),
+                    cwd=install_dir,
                     capture_output=True,
                     text=True,
                     timeout=10
@@ -465,13 +520,17 @@ class PolarCloudPlugin:
         """Handle update requests"""
         try:
             import subprocess
-            
+
             logging.info("Starting software update via web interface")
-            
+
             # Run git pull and restart service
+            if is_k1_system():
+                update_cmd = "cd /usr/data/polar-cloud-klipper && git pull && /usr/data/polar_cloud_service.sh restart"
+            else:
+                update_cmd = "cd ~/polar-cloud-klipper && git pull && sudo systemctl restart polar_cloud"
+
             result = subprocess.run([
-                "bash", "-c", 
-                "cd ~/polar-cloud-klipper && git pull && sudo systemctl restart polar_cloud"
+                "bash", "-c", update_cmd
             ], capture_output=True, text=True, timeout=60)
             
             if result.returncode == 0:
