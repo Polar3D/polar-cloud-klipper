@@ -377,10 +377,15 @@ configure_nginx() {
     local nginx_configs=(
         "/etc/nginx/sites-available/mainsail"
         "/etc/nginx/sites-available/fluidd"
+        "/etc/nginx/sites-available/voron"
+        "/etc/nginx/sites-available/ratos"
         "/etc/nginx/conf.d/mainsail.conf"
         "/etc/nginx/conf.d/fluidd.conf"
+        "/etc/nginx/conf.d/voron.conf"
         "/etc/nginx/sites-enabled/mainsail"
         "/etc/nginx/sites-enabled/fluidd"
+        "/etc/nginx/sites-enabled/voron"
+        "/etc/nginx/sites-enabled/ratos"
     )
     
     for conf in "${nginx_configs[@]}"; do
@@ -394,12 +399,27 @@ configure_nginx() {
     # If not found, try to detect from running nginx
     if [ -z "$nginx_conf" ]; then
         # Try to find config from nginx process
-        if nginx_conf=$(sudo nginx -T 2>/dev/null | grep -E "^# configuration file /etc/nginx/(sites-available|sites-enabled|conf.d)/(mainsail|fluidd)" | head -1 | cut -d' ' -f4); then
+        if nginx_conf=$(sudo nginx -T 2>/dev/null | grep -E "^# configuration file /etc/nginx/(sites-available|sites-enabled|conf.d)/" | grep -v "default" | head -1 | cut -d' ' -f4); then
             if [ -f "$nginx_conf" ]; then
                 print_info "Found nginx configuration from running process: $nginx_conf"
             else
                 nginx_conf=""
             fi
+        fi
+    fi
+
+    # If still not found, try to find any config with /server proxy
+    if [ -z "$nginx_conf" ]; then
+        print_info "Searching for nginx config with /server proxy..."
+        # Search in sites-enabled first
+        if [ -d "/etc/nginx/sites-enabled" ]; then
+            for conf in /etc/nginx/sites-enabled/*; do
+                if [ -f "$conf" ] && grep -q "location.*server" "$conf"; then
+                    nginx_conf="$conf"
+                    print_info "Found compatible nginx configuration: $conf"
+                    break
+                fi
+            done
         fi
     fi
     
@@ -420,6 +440,15 @@ server {
     listen [::]:8080;
     
     server_name _;
+    
+    # Moonraker API proxy (required for Polar Cloud)
+    location /server {
+        proxy_pass http://127.0.0.1:7125/server;
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Scheme \$scheme;
+    }
     
     # Redirect /polar-cloud to /polar-cloud/ for user-friendliness
     location = /polar-cloud {
@@ -444,22 +473,28 @@ EOF
             return
         fi
         
-        # Backup the original configuration
-        sudo cp "$nginx_conf" "${nginx_conf}.backup.$(date +%Y%m%d_%H%M%S)"
-        print_info "Created backup of nginx configuration"
+        # Backup the original configuration to a safe location (not sites-enabled)
+        local backup_dir="/tmp/polar_cloud_backups"
+        mkdir -p "$backup_dir"
+        local backup_file="$backup_dir/$(basename "$nginx_conf").backup.$(date +%Y%m%d_%H%M%S)"
+        
+        sudo cp "$nginx_conf" "$backup_file"
+        print_info "Created backup of nginx configuration at $backup_file"
         
         # Check if /server location exists for Moonraker
+        # Check for both standard location and regex pattern used in some configs
         local needs_server_proxy=false
-        if ! grep -q "location.*/server" "$nginx_conf"; then
+        if ! grep -q "location.*/server" "$nginx_conf" && ! grep -q "location.*\^/.*server" "$nginx_conf"; then
             needs_server_proxy=true
             print_warning "Nginx missing /server proxy for Moonraker API"
+        else
+            print_info "Found existing /server proxy configuration"
         fi
         
         # Prepare the nginx snippet with actual path
         local nginx_snippet=""
         if [ "$needs_server_proxy" = true ]; then
             nginx_snippet=$(cat << EOF
-
 # Moonraker API proxy (required for Polar Cloud)
 # Automatically added by Polar Cloud installer on $(date)
 location /server {
@@ -571,17 +606,14 @@ EOF
         print_info "Attempting to restore backup..."
         
         # Try to restore from backup
-        if [ -f "${nginx_conf}.backup."* ]; then
-            local latest_backup=$(ls -t "${nginx_conf}.backup."* 2>/dev/null | head -1)
-            if [ -n "$latest_backup" ]; then
-                sudo cp "$latest_backup" "$nginx_conf"
-                if sudo nginx -t 2>/dev/null; then
-                    sudo systemctl reload nginx
-                    print_warning "Restored nginx configuration from backup"
-                    print_info "Manual configuration may be required"
-                else
-                    print_error "Could not restore nginx configuration"
-                fi
+        if [ -f "$backup_file" ]; then
+            sudo cp "$backup_file" "$nginx_conf"
+            if sudo nginx -t 2>/dev/null; then
+                sudo systemctl reload nginx
+                print_warning "Restored nginx configuration from backup"
+                print_info "Manual configuration may be required"
+            else
+                print_error "Could not restore nginx configuration"
             fi
         fi
     fi
@@ -630,10 +662,14 @@ print_instructions() {
 main() {
     print_header
     
-    # Check if running as root
+    # Check if running as root (allow on K1/K1C where root is normal)
     if [ "$EUID" -eq 0 ]; then
-        print_error "Please run this script as a normal user, not as root!"
-        exit 1
+        if [ -d "/usr/data" ]; then
+            print_warning "Running as root on Creality K1/K1C - this is expected"
+        else
+            print_error "Please run this script as a normal user, not as root!"
+            exit 1
+        fi
     fi
     
     # Track installation status

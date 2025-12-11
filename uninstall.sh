@@ -39,13 +39,16 @@ uninstall() {
     print_header
     
     print_warning "This will remove the Polar Cloud integration from your system."
-    read -p "Are you sure you want to continue? (y/N) " -n 1 -r
-    echo
+    read -p "Are you sure you want to continue? (y/N) " REPLY
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         print_info "Uninstall cancelled."
         exit 0
     fi
-    
+
+    # Prompt for sudo password upfront to avoid issues later
+    print_info "Requesting sudo access..."
+    sudo -v || { print_error "Failed to obtain sudo access"; exit 1; }
+
     # Stop and disable service
     print_info "Stopping Polar Cloud service..."
     sudo systemctl stop polar_cloud 2>/dev/null || true
@@ -103,10 +106,9 @@ uninstall() {
     print_warning "Configuration file contains your Polar Cloud credentials and registration."
     echo "Choose an option:"
     echo "1) Keep configuration and registration (quick reconnect)"
-    echo "2) Keep credentials but clear registration (show registration process)" 
+    echo "2) Keep credentials but clear registration (show registration process)"
     echo "3) Remove all configuration and credentials"
-    read -p "Select option (1/2/3): " -n 1 -r
-    echo
+    read -p "Select option (1/2/3): " REPLY
     
     config_file=""
     if [ -f "$HOME_DIR/printer_data/config/polar_cloud.conf" ]; then

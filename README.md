@@ -43,13 +43,53 @@ Your system should have:
 ### Quick Install
 
 ```bash
-# Download the installer
+curl -sSL https://polar3d.com/install-klipper.sh | bash
+```
+
+Or manually:
+
+```bash
 git clone https://github.com/Polar3D/polar-cloud-klipper.git
 cd polar-cloud-klipper
-
-# Run the installer
 ./install.sh
 ```
+
+### Creality K1/K1C/K1 Max
+
+These printers have a custom firmware environment. A dedicated K1-specific installer is included.
+
+**Prerequisites:**
+- Rooted K1 firmware with SSH access
+- [Entware](https://github.com/Guilouz/Creality-K1-and-K1-Max/wiki/Entware) package manager installed
+- Git installed via Entware
+
+**Installation:**
+
+```bash
+# 1. SSH into your K1 printer
+ssh root@<printer-ip>
+
+# 2. Install git if not already installed
+/opt/bin/opkg update && /opt/bin/opkg install git git-http
+
+# 3. Clone and install
+cd /usr/data
+git clone https://github.com/Polar3D/polar-cloud-klipper.git
+cd polar-cloud-klipper
+./install_k1.sh
+```
+
+**After installation:**
+- Access the web interface at `http://<printer-ip>/polar-cloud/`
+- Use `/usr/data/polar_cloud_service.sh status` to check service status
+- Logs are at `/usr/data/printer_data/logs/polar_cloud.log`
+
+**Uninstalling on K1:**
+```bash
+/usr/data/polar-cloud-klipper/uninstall_k1.sh
+```
+
+> **Note:** The K1 installer uses the system Python and creates service scripts compatible with the K1's init system (not systemd).
 
 The installer will:
 1. Detect your system configuration (user, paths, etc.)
@@ -62,6 +102,9 @@ The installer will:
 
 After installation, you may need to manually add nginx configuration. The installer will provide the exact configuration snippet to add to your nginx config.
 
+> [!NOTE]
+> If the installer cannot automatically configure nginx, it will create a standalone configuration on port 8080. You can access the web interface at `http://your-printer-ip:8080/polar-cloud/`.
+
 ## Usage
 
 ### Web Interface Setup
@@ -70,7 +113,7 @@ After installation, you may need to manually add nginx configuration. The instal
 2. Enter your Polar Cloud credentials:
    - Username: Your Polar Cloud username
    - PIN: Get from [https://polar3d.com/](https://polar3d.com/)
-3. Select your printer type and machine configuration
+3. Select your machine type, manufacturer, and printer model
 4. Save settings and wait for connection
 
 ### API Integration
@@ -87,6 +130,7 @@ POST /printer/polar_cloud/config
 
 ### Service Management
 
+**Standard Klipper installations:**
 ```bash
 # Check service status
 sudo systemctl status polar_cloud
@@ -96,10 +140,32 @@ sudo journalctl -u polar_cloud -f
 
 # Restart service
 sudo systemctl restart polar_cloud
-
-# Test connection
-cd ~/polar-cloud && ./venv/bin/python test_socketio.py
 ```
+
+**Creality K1/K1C/K1 Max:**
+```bash
+# Check service status
+/usr/data/polar_cloud_service.sh status
+
+# View logs
+tail -f /usr/data/printer_data/logs/polar_cloud.log
+
+# Restart service
+/usr/data/polar_cloud_service.sh restart
+```
+
+### Updating
+
+Updates can be done through the Mainsail/Fluidd update manager UI - look for "Polar Cloud" in the Machine/Update Manager section.
+
+To update manually:
+```bash
+cd ~/polar-cloud-klipper
+git pull
+./install.sh
+```
+
+The install script preserves your existing configuration while updating the code and service files.
 
 ## Configuration
 
@@ -118,7 +184,13 @@ serial_number = auto_generated
 # Printer settings
 machine_type = Cartesian
 printer_type = Ender 3
+manufacturer = generic
 webcam_enabled = true
+
+# Webcam settings
+# flip_horizontal = false
+# flip_vertical = false
+# rotation = 0
 
 # Advanced settings
 verbose = false
@@ -128,10 +200,37 @@ max_image_size = 150000
 
 ## Troubleshooting
 
+### Exporting Diagnostic Logs
+
+The easiest way to troubleshoot connection issues is to use the **Export Logs** button in the web interface. This generates a comprehensive diagnostic file containing:
+- System information
+- Network connectivity tests
+- Service status
+- Recent log entries
+- Configuration (with PIN masked)
+
+### Viewing Logs
+
+**Real-time logs:**
+```bash
+sudo journalctl -u polar_cloud -f
+```
+
+**Recent log entries:**
+```bash
+sudo journalctl -u polar_cloud --since "10 minutes ago"
+```
+
+**Application log file:**
+```bash
+cat ~/printer_data/logs/polar_cloud.log
+```
+
 ### Connection Issues
 
 1. **Service not starting**:
    ```bash
+   sudo systemctl status polar_cloud
    sudo journalctl -u polar_cloud -f
    ```
 
@@ -139,16 +238,23 @@ max_image_size = 150000
    - Verify credentials at [https://polar3d.com/](https://polar3d.com/)
    - Check firewall settings (port 443 outbound)
    - Review service logs for specific error messages
+   - The web interface will display the last error in the Connection Status section
 
 3. **Web interface not accessible**:
    - Ensure nginx configuration was added correctly
    - Test nginx config: `sudo nginx -t`
    - Restart nginx: `sudo systemctl restart nginx`
 
+4. **Printer not in dropdown list**:
+   - Printer types are loaded from Polar Cloud's database
+   - If your exact printer model isn't listed, select a similar model or use "Cartesian" as a generic option
+   - CoreXY printers (like Voron) can use the "Cartesian" machine type
+
 ### Common Issues
 
 - **"Registration failed: SUCCESS"**: Indicates server format mismatch, check logs for details
-- **Repeated registration attempts**: Service unable to save serial number, check file permissions
+- **"Authentication failed"**: Verify your username and PIN are correct, and that your account is active on polar3d.com
+- **Repeated registration attempts**: Service unable to save serial number, check file permissions for `~/printer_data/config/`
 - **Web interface shows incorrect status**: Status file may not be updating, restart both services
 
 ### Debug Mode
@@ -158,7 +264,11 @@ Enable verbose logging in configuration:
 verbose = true
 ```
 
-Then restart the service and monitor logs.
+Then restart the service and monitor logs:
+```bash
+sudo systemctl restart polar_cloud
+sudo journalctl -u polar_cloud -f
+```
 
 ## Uninstallation
 
@@ -180,8 +290,11 @@ This will:
 
 ```
 polar-cloud-klipper/
-├── install.sh              # Main installer script
-├── uninstall.sh            # Removal script
+├── bootstrap.sh            # One-liner bootstrap script
+├── install.sh              # Main installer (Raspberry Pi, etc.)
+├── install_k1.sh           # Creality K1 series installer
+├── uninstall.sh            # Standard removal script
+├── uninstall_k1.sh         # K1 series removal script
 ├── requirements.txt        # Python dependencies
 ├── src/                    # Source files
 │   ├── polar_cloud.py     # Main service
