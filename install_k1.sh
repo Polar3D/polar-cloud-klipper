@@ -258,6 +258,8 @@ install_venv() {
     print_info "Installing Python dependencies..."
 
     # Core packages that should always work
+    # Note: We use the synchronous Socket.IO client (not AsyncClient) to avoid
+    # the aiohttp dependency, which cannot be installed on K1 (requires Rust compiler)
     "$VENV_DIR/bin/pip" install --no-cache-dir 'python-socketio[client]>=5.0' 2>&1 || {
         print_error "Failed to install python-socketio"
         exit 1
@@ -268,11 +270,12 @@ install_venv() {
         exit 1
     }
 
-    "$VENV_DIR/bin/pip" install --no-cache-dir 'configparser>=5.0' 2>&1 || true
-
-    "$VENV_DIR/bin/pip" install --no-cache-dir 'aiohttp>=3.7' 2>&1 || {
-        print_warning "aiohttp installation had issues, continuing..."
+    # websocket-client is used by sync Socket.IO client for WebSocket transport
+    "$VENV_DIR/bin/pip" install --no-cache-dir 'websocket-client>=1.0' 2>&1 || {
+        print_warning "Failed to install websocket-client, Socket.IO will use HTTP polling"
     }
+
+    "$VENV_DIR/bin/pip" install --no-cache-dir 'configparser>=5.0' 2>&1 || true
 
     # Pillow - may need to use system version
     "$VENV_DIR/bin/pip" install --no-cache-dir 'Pillow>=8.0' 2>&1 || {
