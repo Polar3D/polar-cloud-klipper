@@ -209,8 +209,8 @@ class PolarCloudService:
         def welcome(data):
             """Handle welcome message with challenge"""
             try:
-                self.challenge = data.get("challenge")
-                logger.info(f"Received welcome from Polar Cloud with challenge: {self.challenge}")
+                self.challenge = data.get("challenge") if isinstance(data, dict) else None
+                logger.info("Received welcome from Polar Cloud")
 
                 # Reload config to ensure we have latest values
                 self.load_config()
@@ -220,7 +220,7 @@ class PolarCloudService:
                 username = self.config.get('polar_cloud', 'username', fallback='').strip()
                 pin = self.config.get('polar_cloud', 'pin', fallback='').strip()
 
-                logger.info(f"Config check - Serial: {'SET' if self.serial_number else 'MISSING'}, Username: {'SET' if username else 'MISSING'}, PIN: {'SET' if pin else 'MISSING'}")
+                logger.debug(f"Config check - Serial: {'SET' if self.serial_number else 'MISSING'}, Username: {'SET' if username else 'MISSING'}, PIN: {'SET' if pin else 'MISSING'}")
 
                 if not self.serial_number and username and pin:
                     logger.info("No serial number found, attempting registration")
