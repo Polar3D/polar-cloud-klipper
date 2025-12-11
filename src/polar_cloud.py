@@ -29,10 +29,22 @@ import signal
 import subprocess
 
 
+def get_printer_data_path():
+    """Get the printer_data path, handling K1 and standard installations."""
+    # K1 series uses /usr/data/printer_data
+    if os.path.exists('/usr/data/printer_data'):
+        return '/usr/data/printer_data'
+    # Standard installation uses ~/printer_data
+    return os.path.expanduser('~/printer_data')
+
+
+PRINTER_DATA_PATH = get_printer_data_path()
+
+
 # --- Patch: Set logging level based on config verbose flag ---
 def get_verbose_flag(config_file=None):
     if config_file is None:
-        config_file = os.path.expanduser('~/printer_data/config/polar_cloud.conf')
+        config_file = os.path.join(PRINTER_DATA_PATH, 'config/polar_cloud.conf')
     import configparser
     config = configparser.ConfigParser()
     if os.path.exists(config_file):
@@ -47,7 +59,7 @@ logging.basicConfig(
     level=_log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.expanduser('~/printer_data/logs/polar_cloud.log')),
+        logging.FileHandler(os.path.join(PRINTER_DATA_PATH, 'logs/polar_cloud.log')),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -72,7 +84,7 @@ class PolarCloudService:
 
     def __init__(self, config_file=None):
         if config_file is None:
-            config_file = os.path.expanduser('~/printer_data/config/polar_cloud.conf')
+            config_file = os.path.join(PRINTER_DATA_PATH, 'config/polar_cloud.conf')
         self.config_file = config_file
         self.config = configparser.ConfigParser()
         self.sio = socketio.AsyncClient(
@@ -93,7 +105,7 @@ class PolarCloudService:
         self.last_status = None
         self.disconnect_on_register = True  # Enable disconnect after registration as per protocol
         self.disconnect_on_unregister = False
-        self.status_file = os.path.expanduser('~/printer_data/logs/polar_cloud_status.json')  # Status file for Moonraker plugin
+        self.status_file = os.path.join(PRINTER_DATA_PATH, 'logs/polar_cloud_status.json')  # Status file for Moonraker plugin
         
         # Image upload functionality
         self.upload_urls = {}  # Store pre-signed URLs by type
@@ -517,7 +529,7 @@ class PolarCloudService:
     
     def ensure_keys(self):
         """Generate or load RSA key pair"""
-        key_file = os.path.expanduser('~/printer_data/config/polar_cloud_key.pem')
+        key_file = os.path.join(PRINTER_DATA_PATH, 'config/polar_cloud_key.pem')
         
         if os.path.exists(key_file):
             # Load existing key
@@ -1561,7 +1573,7 @@ class PolarCloudService:
                 if response.status_code == 200:
                     # Save gcode file to printer
                     filename = f"polar_cloud_{job_id}.gcode"
-                    filepath = os.path.expanduser(f"~/printer_data/gcodes/{filename}")
+                    filepath = os.path.join(PRINTER_DATA_PATH, f"gcodes/{filename}")
                     
                     with open(filepath, 'wb') as f:
                         f.write(response.content)
