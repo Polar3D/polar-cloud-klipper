@@ -675,7 +675,7 @@ class PolarCloudService:
             printer_info = self.get_moonraker_data("printer/info")
             print_stats = self.get_moonraker_data("printer/objects/query?print_stats")
             toolhead = self.get_moonraker_data("printer/objects/query?toolhead")
-            heaters = self.get_moonraker_data("printer/objects/query?heater_bed&extruder")
+            heaters = self.get_moonraker_data("printer/objects/query?heater_bed&extruder&extruder1&heater_chamber")
 
             status = self.PSTATE_IDLE
             progress = "Idle"
@@ -786,23 +786,36 @@ class PolarCloudService:
             tool0 = 0.0
             tool1 = 0.0
             bed_temp = 0.0
-            target_tool0 = 0
+            chamber_temp = 0.0
+            target_tool0 = 0.0
+            target_tool1 = 0.0
+            target_bed = 0.0
+            target_chamber = 0.0
 
             if heaters and 'result' in heaters:
-                result = heaters['result']
+                # Moonraker returns data under result.status
+                status_data = heaters['result'].get('status', heaters['result'])
 
-                if 'extruder' in result:
-                    extruder = result['extruder']
+                if 'extruder' in status_data:
+                    extruder = status_data['extruder']
                     tool0 = round(extruder.get('temperature', 0), 1)
-                    target_tool0 = int(extruder.get('target', 0))
+                    target_tool0 = round(extruder.get('target', 0), 1)
 
-                if 'extruder1' in result:
-                    extruder1 = result['extruder1']
+                if 'extruder1' in status_data:
+                    extruder1 = status_data['extruder1']
                     tool1 = round(extruder1.get('temperature', 0), 1)
+                    target_tool1 = round(extruder1.get('target', 0), 1)
 
-                if 'heater_bed' in result:
-                    bed = result['heater_bed']
+                if 'heater_bed' in status_data:
+                    bed = status_data['heater_bed']
                     bed_temp = round(bed.get('temperature', 0), 1)
+                    target_bed = round(bed.get('target', 0), 1)
+
+                # Check for chamber heater (K1 may have this)
+                if 'heater_chamber' in status_data:
+                    chamber = status_data['heater_chamber']
+                    chamber_temp = round(chamber.get('temperature', 0), 1)
+                    target_chamber = round(chamber.get('target', 0), 1)
 
             status_dict = {
                 "serialNumber": self.serial_number or "",
@@ -815,7 +828,14 @@ class PolarCloudService:
                 "tool1": tool1,
                 "bed": bed_temp,
                 "targetTool0": target_tool0,
+                "targetTool1": target_tool1,
+                "targetBed": target_bed,
             }
+
+            # Add chamber if available
+            if chamber_temp > 0 or target_chamber > 0:
+                status_dict["chamber"] = chamber_temp
+                status_dict["targetChamber"] = target_chamber
 
             if filament_used != "0":
                 status_dict["filamentUsed"] = filament_used
