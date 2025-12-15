@@ -49,6 +49,7 @@ def get_printer_data_path():
 
 
 PRINTER_DATA_PATH = get_printer_data_path()
+JOB_STATE_FILE = os.path.join(PRINTER_DATA_PATH, 'config/.polar_cloud_job_state')
 
 
 # --- Patch: Set logging level based on config verbose flag ---
@@ -162,6 +163,9 @@ class PolarCloudService:
 
         # Load configuration
         self.load_config()
+
+        # Restore job state if service was restarted during a print
+        self.restore_job_state()
 
         # Generate or load keys
         self.ensure_keys()
@@ -467,6 +471,85 @@ class PolarCloudService:
         os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
         with open(self.config_file, 'w') as f:
             self.config.write(f)
+
+    def save_job_state(self):
+        """Save current job state to file for persistence across restarts"""
+        try:
+            if self.is_printing_cloud_job and self.current_job_id:
+                state = {
+                    "job_id": self.current_job_id,
+                    "is_cloud_job": True,
+                    "job_start_time": self.job_start_time,
+                    "stl_file": self.current_stl_file,
+                    "config_file": self.current_config_file,
+                    "saved_at": datetime.now().isoformat()
+                }
+                with open(JOB_STATE_FILE, 'w') as f:
+                    json.dump(state, f)
+                logger.debug(f"Saved job state for job {self.current_job_id}")
+            else:
+                # No active cloud job, remove state file if it exists
+                self.clear_job_state()
+        except Exception as e:
+            logger.error(f"Error saving job state: {e}")
+
+    def restore_job_state(self):
+        """Restore job state from file if printer is still printing"""
+        try:
+            if not os.path.exists(JOB_STATE_FILE):
+                return
+
+            with open(JOB_STATE_FILE, 'r') as f:
+                state = json.load(f)
+
+            job_id = state.get("job_id")
+            if not job_id:
+                self.clear_job_state()
+                return
+
+            # Check if printer is still printing via Moonraker
+            try:
+                response = requests.get(
+                    f"{self.moonraker_url}/printer/objects/query?print_stats",
+                    timeout=5
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    result = data.get('result', {})
+                    status = result.get('status', result)
+                    print_stats = status.get('print_stats', {})
+                    printer_state = print_stats.get('state', 'standby')
+
+                    if printer_state in ['printing', 'paused']:
+                        # Printer is still printing, restore the job state
+                        self.current_job_id = job_id
+                        self.is_printing_cloud_job = True
+                        self.job_start_time = state.get("job_start_time")
+                        self.current_stl_file = state.get("stl_file")
+                        self.current_config_file = state.get("config_file")
+                        logger.info(f"Restored cloud job state: job_id={job_id}, printer_state={printer_state}")
+                    else:
+                        # Printer is not printing anymore, clear the state
+                        logger.info(f"Printer not printing (state={printer_state}), clearing stale job state")
+                        self.clear_job_state()
+                else:
+                    logger.warning(f"Could not check printer state: HTTP {response.status_code}")
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Could not connect to Moonraker to verify job state: {e}")
+                # Don't restore if we can't verify printer is still printing
+
+        except Exception as e:
+            logger.error(f"Error restoring job state: {e}")
+            self.clear_job_state()
+
+    def clear_job_state(self):
+        """Remove job state file"""
+        try:
+            if os.path.exists(JOB_STATE_FILE):
+                os.remove(JOB_STATE_FILE)
+                logger.debug("Cleared job state file")
+        except Exception as e:
+            logger.error(f"Error clearing job state: {e}")
 
     def write_status_file(self, error=None):
         """Write current status to file for Moonraker plugin"""
@@ -1382,6 +1465,7 @@ class PolarCloudService:
                     self.current_stl_file = None
                     self.current_config_file = None
                     self.job_is_preparing = False
+                    self.clear_job_state()
 
                 elif printer_status in [self.PSTATE_ERROR, self.PSTATE_CANCELLING]:
                     # Error or cancelled state - job failed/canceled
@@ -1402,6 +1486,7 @@ class PolarCloudService:
                     self.current_stl_file = None
                     self.current_config_file = None
                     self.job_is_preparing = False
+                    self.clear_job_state()
 
                 elif printer_status == self.PSTATE_IDLE:
                     # Only consider it canceled if we've been printing for a while
@@ -1424,6 +1509,7 @@ class PolarCloudService:
                         self.current_stl_file = None
                         self.current_config_file = None
                         self.job_is_preparing = False
+                        self.clear_job_state()
 
         except Exception as e:
             logger.error(f"Error monitoring print completion: {e}")
@@ -1471,6 +1557,7 @@ class PolarCloudService:
                         self.current_job_id = job_id
                         self.job_is_preparing = False
                         self.job_start_time = time.time()
+                        self.save_job_state()  # Persist job state for restart recovery
                         logger.info(f"Started printing cloud job {job_id}")
                     else:
                         logger.error(f"Failed to start print: {print_response.text}")
@@ -1504,6 +1591,7 @@ class PolarCloudService:
                     self.current_config_file = None
                     self.job_is_preparing = False
                     self.job_is_cancelling = False
+                    self.clear_job_state()
                 self.job_is_preparing = False
             else:
                 logger.error(f"Failed to cancel print: {response.text}")
@@ -1608,6 +1696,7 @@ class PolarCloudService:
             self.current_config_file = None
             self.job_is_preparing = False
             self.hello_sent = False
+            self.clear_job_state()
 
             self.upload_urls.clear()
 
