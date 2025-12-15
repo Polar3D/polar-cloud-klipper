@@ -703,18 +703,24 @@ class PolarCloudService:
                 filename = stats.get('filename', '')
 
                 if state == 'printing':
+                    print_seconds = int(stats.get('print_duration', 0))
+                    estimated_time = str(int(stats.get('total_duration', 0)))
+
                     if self.job_is_cancelling and self.is_printing_cloud_job:
                         status = self.PSTATE_CANCELLING
                         progress = "Killing Job"
+                    elif print_seconds == 0:
+                        # Printer is in "printing" state but no actual printing yet
+                        # This means it's preparing (leveling, heating, etc.)
+                        status = self.PSTATE_PREPARING
+                        progress = "Preparing"
+                        progress_detail = "Leveling and heating"
                     elif self.is_printing_cloud_job:
                         status = self.PSTATE_PRINTING
                         progress = "Job Printing"
                     else:
                         status = self.PSTATE_SERIAL
                         progress = "Job Printing"
-
-                    print_seconds = int(stats.get('print_duration', 0))
-                    estimated_time = str(int(stats.get('total_duration', 0)))
 
                     file_position = stats.get('file_position', 0)
                     file_size = stats.get('file_size', 0)
@@ -1183,14 +1189,17 @@ class PolarCloudService:
 
             current_status_code = status.get("status", self.PSTATE_IDLE)
 
-            if current_status_code in [self.PSTATE_PRINTING, self.PSTATE_SERIAL, self.PSTATE_PAUSED]:
+            # Always send status when printing/preparing/paused
+            if current_status_code in [self.PSTATE_PRINTING, self.PSTATE_SERIAL, self.PSTATE_PAUSED, self.PSTATE_PREPARING, self.PSTATE_CANCELLING]:
                 self.sio.emit("status", status)
-                logger.debug(f"Status sent to Polar Cloud: state={current_status_code}")
+                logger.info(f"Status sent: state={current_status_code}, tool0={status.get('tool0')}, bed={status.get('bed')}")
             elif self.last_status and status == self.last_status:
+                # Skip sending if status hasn't changed
                 return
             else:
+                # Send changed idle status
                 self.sio.emit("status", status)
-                logger.debug(f"Status sent to Polar Cloud: state={current_status_code}")
+                logger.info(f"Status sent: state={current_status_code}")
 
             self.last_status = status.copy()
         except Exception as e:
@@ -1241,8 +1250,10 @@ class PolarCloudService:
     def start_status_loop(self):
         """Start the status loop in a background thread"""
         if self._status_thread is not None and self._status_thread.is_alive():
+            logger.debug("Status loop already running")
             return
 
+        logger.info("Starting status loop thread")
         self._status_thread_running = True
         self._status_thread = threading.Thread(target=self._status_loop_worker, daemon=True)
         self._status_thread.start()
