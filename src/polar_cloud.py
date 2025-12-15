@@ -793,6 +793,12 @@ class PolarCloudService:
                     progress = "Error"
                     progress_detail = "Error"
 
+                elif state == 'cancelled':
+                    # Moonraker uses British spelling "cancelled"
+                    status = self.PSTATE_CANCELLING
+                    progress = "Cancelled"
+                    progress_detail = "Print was cancelled"
+
             # Get temperature data
             tool0 = 0.0
             tool1 = 0.0
@@ -1366,9 +1372,10 @@ class PolarCloudService:
                     self.current_config_file = None
                     self.job_is_preparing = False
 
-                elif printer_status == self.PSTATE_ERROR:
-                    # Error state - job failed
+                elif printer_status in [self.PSTATE_ERROR, self.PSTATE_CANCELLING]:
+                    # Error or cancelled state - job failed/canceled
                     print_seconds = int(status.get("printSeconds", "0"))
+                    logger.info(f"Job {self.current_job_id} canceled/failed (status={printer_status})")
                     self.send_job_completion(
                         self.current_job_id,
                         "canceled",
