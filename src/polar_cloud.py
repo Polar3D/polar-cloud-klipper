@@ -692,13 +692,22 @@ class PolarCloudService:
             bytes_read = 0
             file_size = 0
 
+            # Parse print_stats from Moonraker response
+            stats = None
+            if print_stats and 'result' in print_stats:
+                # Moonraker returns data under result.status.print_stats
+                result_data = print_stats['result']
+                if 'status' in result_data and 'print_stats' in result_data['status']:
+                    stats = result_data['status']['print_stats']
+                elif 'print_stats' in result_data:
+                    stats = result_data['print_stats']
+
             if self.job_is_preparing and self.is_printing_cloud_job and self.current_job_id:
                 status = self.PSTATE_PREPARING
                 progress = "Preparing to print a job"
                 progress_detail = f"Downloading file for job: {self.current_job_id}"
                 start_time = self.job_start_time or ""
-            elif print_stats and 'result' in print_stats and 'print_stats' in print_stats['result']:
-                stats = print_stats['result']['print_stats']
+            elif stats:
                 state = stats.get('state', 'standby')
                 filename = stats.get('filename', '')
 
