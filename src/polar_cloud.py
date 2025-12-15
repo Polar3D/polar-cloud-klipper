@@ -715,6 +715,8 @@ class PolarCloudService:
                     print_seconds = int(stats.get('print_duration', 0))
                     estimated_time = str(int(stats.get('total_duration', 0)))
 
+                    logger.info(f"Printing state: is_cloud={self.is_printing_cloud_job}, job_id={self.current_job_id}, print_seconds={print_seconds}")
+
                     if self.job_is_cancelling and self.is_printing_cloud_job:
                         status = self.PSTATE_CANCELLING
                         progress = "Killing Job"
