@@ -1366,7 +1366,8 @@ class PolarCloudService:
                     self.current_config_file = None
                     self.job_is_preparing = False
 
-                elif printer_status in [self.PSTATE_IDLE, self.PSTATE_ERROR]:
+                elif printer_status == self.PSTATE_ERROR:
+                    # Error state - job failed
                     print_seconds = int(status.get("printSeconds", "0"))
                     self.send_job_completion(
                         self.current_job_id,
@@ -1383,6 +1384,28 @@ class PolarCloudService:
                     self.current_stl_file = None
                     self.current_config_file = None
                     self.job_is_preparing = False
+
+                elif printer_status == self.PSTATE_IDLE:
+                    # Only consider it canceled if we've been printing for a while
+                    # This avoids false cancellation during job startup
+                    print_seconds = int(status.get("printSeconds", "0"))
+                    if print_seconds > 5:  # Only cancel if we actually printed something
+                        logger.info(f"Job {self.current_job_id} appears canceled (idle after {print_seconds}s of printing)")
+                        self.send_job_completion(
+                            self.current_job_id,
+                            "canceled",
+                            print_seconds,
+                            job_progress['filament_used'],
+                            job_progress['bytes_read'],
+                            job_progress['file_size']
+                        )
+
+                        self.is_printing_cloud_job = False
+                        self.current_job_id = None
+                        self.job_start_time = None
+                        self.current_stl_file = None
+                        self.current_config_file = None
+                        self.job_is_preparing = False
 
         except Exception as e:
             logger.error(f"Error monitoring print completion: {e}")
