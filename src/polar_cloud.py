@@ -493,7 +493,7 @@ class PolarCloudService:
 
             # Detect cloud job by filename pattern (polar_cloud_{job_id}.gcode)
             import re
-            match = re.match(r'polar_cloud_([a-zA-Z0-9]+)\.gcode', filename)
+            match = re.match(r'polar_cloud_([a-zA-Z0-9-]+)\.gcode', filename)
             if match:
                 job_id = match.group(1)
                 self.current_job_id = job_id
@@ -1404,11 +1404,39 @@ class PolarCloudService:
             logger.error(f"Error sending job completion: {e}")
             return False
 
+    def reset_print_state(self):
+        """Reset Klipper's print state by sending SDCARD_RESET_FILE command.
+
+        This is necessary on K1/K1C/K1 Max because after a print is cancelled,
+        Klipper stays in the 'cancelled' state indefinitely. This command
+        resets print_stats to 'standby' so the printer is ready for new jobs.
+        """
+        try:
+            logger.info("Resetting print state with SDCARD_RESET_FILE")
+            response = requests.post(
+                f"{self.moonraker_url}/printer/gcode/script",
+                json={"script": "SDCARD_RESET_FILE"},
+                timeout=10
+            )
+            if response.status_code == 200:
+                logger.info("Print state reset successfully")
+                return True
+            else:
+                logger.warning(f"Failed to reset print state: {response.status_code}")
+                return False
+        except Exception as e:
+            logger.error(f"Error resetting print state: {e}")
+            return False
+
     def monitor_print_completion(self):
         """Monitor for print completion and send job notifications"""
         try:
             status = self.get_printer_status()
             printer_status = status.get("status", self.PSTATE_IDLE)
+
+            # Log when we have a cloud job in a terminal state
+            if printer_status in [self.PSTATE_COMPLETE, self.PSTATE_POSTPROCESSING, self.PSTATE_ERROR, self.PSTATE_CANCELLING]:
+                logger.info(f"Terminal state detected: status={printer_status}, is_cloud={self.is_printing_cloud_job}, job_id={self.current_job_id}")
 
             if self.is_printing_cloud_job and self.current_job_id:
                 job_progress = self.get_job_progress()
@@ -1443,6 +1471,10 @@ class PolarCloudService:
                         job_progress['bytes_read'],
                         job_progress['file_size']
                     )
+
+                    # Reset Klipper's print state so it doesn't stay stuck in 'cancelled'
+                    # This is especially important for K1/K1C which stays in cancelled state
+                    self.reset_print_state()
 
                     self.is_printing_cloud_job = False
                     self.current_job_id = None
