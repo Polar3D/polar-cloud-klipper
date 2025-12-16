@@ -787,8 +787,9 @@ class PolarCloudService:
                     if stats.get('print_start_time'):
                         start_time = datetime.fromtimestamp(stats['print_start_time']).isoformat() + 'Z'
 
-                    if stats.get('total_duration', 0) > 0 and stats.get('print_duration', 0) > 0:
-                        progress_pct = (stats['print_duration'] / stats['total_duration']) * 100
+                    # Calculate progress from file position (more accurate than duration)
+                    if file_size > 0:
+                        progress_pct = (file_position / file_size) * 100
                         if self.current_job_id:
                             progress_detail = f"Printing Job: {self.current_job_id} Percent Complete: {progress_pct:.1f}%"
                         else:
@@ -813,8 +814,9 @@ class PolarCloudService:
                     if stats.get('print_start_time'):
                         start_time = datetime.fromtimestamp(stats['print_start_time']).isoformat() + 'Z'
 
-                    if stats.get('total_duration', 0) > 0 and stats.get('print_duration', 0) > 0:
-                        progress_pct = (stats['print_duration'] / stats['total_duration']) * 100
+                    # Calculate progress from file position (more accurate than duration)
+                    if file_size > 0:
+                        progress_pct = (file_position / file_size) * 100
                         if self.current_job_id:
                             progress_detail = f"Printing Job: {self.current_job_id} Percent Complete: {progress_pct:.1f}%"
                         else:
