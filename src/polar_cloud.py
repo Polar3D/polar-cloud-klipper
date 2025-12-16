@@ -65,15 +65,23 @@ def get_verbose_flag(config_file=None):
 
 _verbose = get_verbose_flag()
 _log_level = logging.DEBUG if _verbose else logging.INFO
-logging.basicConfig(
-    level=_log_level,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(os.path.join(PRINTER_DATA_PATH, 'logs/polar_cloud.log')),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+
+# Set up logger with explicit handler management to avoid duplicates
 logger = logging.getLogger('polar_cloud')
+logger.setLevel(_log_level)
+logger.propagate = False  # Prevent duplicate logging from root logger
+
+# Only add handlers if they haven't been added yet
+if not logger.handlers:
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+    file_handler = logging.FileHandler(os.path.join(PRINTER_DATA_PATH, 'logs/polar_cloud.log'))
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
 
 class PolarCloudService:
     # Polar Cloud status constants (as integers)
@@ -491,9 +499,11 @@ class PolarCloudService:
             if printer_state not in ['printing', 'paused']:
                 return
 
-            # Detect cloud job by filename pattern (polar_cloud_{job_id}.gcode)
+            # Detect cloud job by filename pattern:
+            # - polar_cloud_{job_id}.gcode (legacy format)
+            # - {jobname}_cloud_{job_id}.gcode (new format with job name)
             import re
-            match = re.match(r'polar_cloud_([a-zA-Z0-9-]+)\.gcode', filename)
+            match = re.match(r'(?:polar_cloud_|.*_cloud_)([a-zA-Z0-9-]+)\.gcode', filename)
             if match:
                 job_id = match.group(1)
                 self.current_job_id = job_id
@@ -1515,11 +1525,15 @@ class PolarCloudService:
             gcode_file = print_data.get("gcodeFile")
             stl_file = print_data.get("stlFile")
             config_file = print_data.get("configFile")
+            job_name = print_data.get("jobName")
+
+            # Log full print_data to see all available fields
+            logger.info(f"Print command data: {print_data}")
 
             self.current_stl_file = stl_file
             self.current_config_file = config_file
 
-            logger.info(f"Executing print command for job {job_id}")
+            logger.info(f"Executing print command for job {job_id} ({job_name})")
 
             if gcode_file:
                 self.current_job_id = job_id
@@ -1532,7 +1546,14 @@ class PolarCloudService:
 
                 response = requests.get(gcode_file, timeout=30)
                 if response.status_code == 200:
-                    filename = f"polar_cloud_{job_id}.gcode"
+                    # Use job name if available, otherwise fall back to job_id
+                    # Sanitize job name for filesystem (remove special chars)
+                    if job_name:
+                        safe_name = "".join(c for c in job_name if c.isalnum() or c in ' _-').strip()
+                        safe_name = safe_name.replace(' ', '_')
+                        filename = f"{safe_name}_cloud_{job_id}.gcode"
+                    else:
+                        filename = f"polar_cloud_{job_id}.gcode"
                     filepath = os.path.join(PRINTER_DATA_PATH, f"gcodes/{filename}")
 
                     with open(filepath, 'wb') as f:
