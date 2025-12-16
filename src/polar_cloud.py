@@ -163,6 +163,9 @@ class PolarCloudService:
         # Load configuration
         self.load_config()
 
+        # Restore job state if service was restarted during a print
+        self.restore_job_state()
+
         # Generate or load keys
         self.ensure_keys()
 
@@ -360,9 +363,9 @@ class PolarCloudService:
                         'contentType': content_type
                     }
                     self.upload_url_received_time[upload_type] = time.time()
-                    logger.debug(f"Received upload URL for type: {upload_type}")
+                    logger.info(f"Received upload URL for type: {upload_type}, expires in {expires}s")
                 else:
-                    logger.warning(f"Invalid or failed upload URL response: {data}")
+                    logger.warning(f"Failed to get upload URL: status={status}, type={upload_type}")
             except Exception as e:
                 logger.error(f"Error handling upload URL response: {e}")
 
@@ -467,6 +470,38 @@ class PolarCloudService:
         os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
         with open(self.config_file, 'w') as f:
             self.config.write(f)
+
+    def restore_job_state(self):
+        """Detect cloud job by filename pattern if service restarts mid-print"""
+        try:
+            response = requests.get(
+                f"{self.moonraker_url}/printer/objects/query?print_stats",
+                timeout=5
+            )
+            if response.status_code != 200:
+                return
+
+            data = response.json()
+            result = data.get('result', {})
+            status = result.get('status', result)
+            print_stats = status.get('print_stats', {})
+            printer_state = print_stats.get('state', 'standby')
+            filename = print_stats.get('filename', '')
+
+            if printer_state not in ['printing', 'paused']:
+                return
+
+            # Detect cloud job by filename pattern (polar_cloud_{job_id}.gcode)
+            import re
+            match = re.match(r'polar_cloud_([a-zA-Z0-9]+)\.gcode', filename)
+            if match:
+                job_id = match.group(1)
+                self.current_job_id = job_id
+                self.is_printing_cloud_job = True
+                logger.info(f"Detected cloud job from filename: job_id={job_id}")
+
+        except Exception as e:
+            logger.debug(f"Could not check for active cloud job: {e}")
 
     def write_status_file(self, error=None):
         """Write current status to file for Moonraker plugin"""
@@ -692,29 +727,46 @@ class PolarCloudService:
             bytes_read = 0
             file_size = 0
 
+            # Parse print_stats from Moonraker response
+            stats = None
+            if print_stats and 'result' in print_stats:
+                # Moonraker returns data under result.status.print_stats
+                result_data = print_stats['result']
+                if 'status' in result_data and 'print_stats' in result_data['status']:
+                    stats = result_data['status']['print_stats']
+                elif 'print_stats' in result_data:
+                    stats = result_data['print_stats']
+
             if self.job_is_preparing and self.is_printing_cloud_job and self.current_job_id:
                 status = self.PSTATE_PREPARING
                 progress = "Preparing to print a job"
                 progress_detail = f"Downloading file for job: {self.current_job_id}"
                 start_time = self.job_start_time or ""
-            elif print_stats and 'result' in print_stats and 'print_stats' in print_stats['result']:
-                stats = print_stats['result']['print_stats']
+            elif stats:
                 state = stats.get('state', 'standby')
                 filename = stats.get('filename', '')
 
                 if state == 'printing':
+                    print_seconds = int(stats.get('print_duration', 0))
+                    estimated_time = str(int(stats.get('total_duration', 0)))
+
+                    logger.info(f"Printing state: is_cloud={self.is_printing_cloud_job}, job_id={self.current_job_id}, print_seconds={print_seconds}")
+
                     if self.job_is_cancelling and self.is_printing_cloud_job:
                         status = self.PSTATE_CANCELLING
                         progress = "Killing Job"
+                    elif print_seconds == 0:
+                        # Printer is in "printing" state but no actual printing yet
+                        # This means it's preparing (leveling, heating, etc.)
+                        status = self.PSTATE_PREPARING
+                        progress = "Preparing"
+                        progress_detail = "Leveling and heating"
                     elif self.is_printing_cloud_job:
                         status = self.PSTATE_PRINTING
                         progress = "Job Printing"
                     else:
                         status = self.PSTATE_SERIAL
                         progress = "Job Printing"
-
-                    print_seconds = int(stats.get('print_duration', 0))
-                    estimated_time = str(int(stats.get('total_duration', 0)))
 
                     file_position = stats.get('file_position', 0)
                     file_size = stats.get('file_size', 0)
@@ -786,6 +838,12 @@ class PolarCloudService:
                     status = self.PSTATE_ERROR
                     progress = "Error"
                     progress_detail = "Error"
+
+                elif state == 'cancelled':
+                    # Moonraker uses British spelling "cancelled"
+                    status = self.PSTATE_CANCELLING
+                    progress = "Cancelled"
+                    progress_detail = "Print was cancelled"
 
             # Get temperature data
             tool0 = 0.0
@@ -1065,7 +1123,7 @@ class PolarCloudService:
             response = requests.post(url_data['url'], data=data, files=files, timeout=30)
 
             if response.status_code in [200, 204]:
-                logger.debug(f"Successfully uploaded {upload_type} image ({len(resized_image)} bytes)")
+                logger.info(f"Uploaded {upload_type} image ({len(resized_image)} bytes)")
                 return True
             else:
                 logger.error(f"Failed to upload image: {response.status_code} - {response.text}")
@@ -1086,7 +1144,9 @@ class PolarCloudService:
             printer_status = status.get("status", self.PSTATE_IDLE)
             current_time = time.time()
 
-            if printer_status == self.PSTATE_PRINTING and self.is_printing_cloud_job and self.current_job_id:
+            # Use faster upload rate during printing, preparing, or paused states for cloud jobs
+            active_states = [self.PSTATE_PRINTING, self.PSTATE_PREPARING, self.PSTATE_PAUSED, self.PSTATE_SERIAL]
+            if printer_status in active_states and self.is_printing_cloud_job and self.current_job_id:
                 upload_type = "printing"
                 interval = self.image_upload_intervals['printing']
             else:
@@ -1098,14 +1158,25 @@ class PolarCloudService:
                 return
 
             image_data = self.capture_webcam_image()
-            if image_data:
-                if upload_type not in self.upload_urls:
-                    job_id = self.current_job_id if upload_type == "printing" else None
-                    self.request_upload_url(upload_type, job_id)
-                    time.sleep(1)
+            if not image_data:
+                logger.debug("No webcam image captured")
+                return
 
-                if self.upload_image_to_cloud(image_data, upload_type):
-                    self.last_image_upload[upload_type] = current_time
+            if upload_type not in self.upload_urls:
+                job_id = self.current_job_id if upload_type == "printing" else None
+                logger.info(f"Requesting upload URL for {upload_type}")
+                self.request_upload_url(upload_type, job_id)
+                # Wait for async response - check up to 5 seconds
+                for _ in range(10):
+                    time.sleep(0.5)
+                    if upload_type in self.upload_urls:
+                        break
+                else:
+                    logger.warning(f"Timeout waiting for upload URL for {upload_type}")
+                    return
+
+            if self.upload_image_to_cloud(image_data, upload_type):
+                self.last_image_upload[upload_type] = current_time
 
         except Exception as e:
             logger.error(f"Error handling image uploads: {e}")
@@ -1183,14 +1254,17 @@ class PolarCloudService:
 
             current_status_code = status.get("status", self.PSTATE_IDLE)
 
-            if current_status_code in [self.PSTATE_PRINTING, self.PSTATE_SERIAL, self.PSTATE_PAUSED]:
+            # Always send status when printing/preparing/paused
+            if current_status_code in [self.PSTATE_PRINTING, self.PSTATE_SERIAL, self.PSTATE_PAUSED, self.PSTATE_PREPARING, self.PSTATE_CANCELLING]:
                 self.sio.emit("status", status)
-                logger.debug(f"Status sent to Polar Cloud: state={current_status_code}")
+                logger.info(f"Status sent: state={current_status_code}, tool0={status.get('tool0')}, bed={status.get('bed')}")
             elif self.last_status and status == self.last_status:
+                # Skip sending if status hasn't changed
                 return
             else:
+                # Send changed idle status
                 self.sio.emit("status", status)
-                logger.debug(f"Status sent to Polar Cloud: state={current_status_code}")
+                logger.info(f"Status sent: state={current_status_code}")
 
             self.last_status = status.copy()
         except Exception as e:
@@ -1241,8 +1315,10 @@ class PolarCloudService:
     def start_status_loop(self):
         """Start the status loop in a background thread"""
         if self._status_thread is not None and self._status_thread.is_alive():
+            logger.debug("Status loop already running")
             return
 
+        logger.info("Starting status loop thread")
         self._status_thread_running = True
         self._status_thread = threading.Thread(target=self._status_loop_worker, daemon=True)
         self._status_thread.start()
@@ -1337,7 +1413,7 @@ class PolarCloudService:
             if self.is_printing_cloud_job and self.current_job_id:
                 job_progress = self.get_job_progress()
 
-                if printer_status == self.PSTATE_COMPLETE:
+                if printer_status in [self.PSTATE_COMPLETE, self.PSTATE_POSTPROCESSING]:
                     print_seconds = int(status.get("printSeconds", "0"))
                     self.send_job_completion(
                         self.current_job_id,
@@ -1355,8 +1431,10 @@ class PolarCloudService:
                     self.current_config_file = None
                     self.job_is_preparing = False
 
-                elif printer_status in [self.PSTATE_IDLE, self.PSTATE_ERROR]:
+                elif printer_status in [self.PSTATE_ERROR, self.PSTATE_CANCELLING]:
+                    # Error or cancelled state - job failed/canceled
                     print_seconds = int(status.get("printSeconds", "0"))
+                    logger.info(f"Job {self.current_job_id} canceled/failed (status={printer_status})")
                     self.send_job_completion(
                         self.current_job_id,
                         "canceled",
@@ -1372,6 +1450,28 @@ class PolarCloudService:
                     self.current_stl_file = None
                     self.current_config_file = None
                     self.job_is_preparing = False
+
+                elif printer_status == self.PSTATE_IDLE:
+                    # Only consider it canceled if we've been printing for a while
+                    # This avoids false cancellation during job startup
+                    print_seconds = int(status.get("printSeconds", "0"))
+                    if print_seconds > 5:  # Only cancel if we actually printed something
+                        logger.info(f"Job {self.current_job_id} appears canceled (idle after {print_seconds}s of printing)")
+                        self.send_job_completion(
+                            self.current_job_id,
+                            "canceled",
+                            print_seconds,
+                            job_progress['filament_used'],
+                            job_progress['bytes_read'],
+                            job_progress['file_size']
+                        )
+
+                        self.is_printing_cloud_job = False
+                        self.current_job_id = None
+                        self.job_start_time = None
+                        self.current_stl_file = None
+                        self.current_config_file = None
+                        self.job_is_preparing = False
 
         except Exception as e:
             logger.error(f"Error monitoring print completion: {e}")
