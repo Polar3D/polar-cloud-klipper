@@ -363,9 +363,9 @@ class PolarCloudService:
                         'contentType': content_type
                     }
                     self.upload_url_received_time[upload_type] = time.time()
-                    logger.debug(f"Received upload URL for type: {upload_type}")
+                    logger.info(f"Received upload URL for type: {upload_type}, expires in {expires}s")
                 else:
-                    logger.warning(f"Invalid or failed upload URL response: {data}")
+                    logger.warning(f"Failed to get upload URL: status={status}, type={upload_type}")
             except Exception as e:
                 logger.error(f"Error handling upload URL response: {e}")
 
@@ -1123,7 +1123,7 @@ class PolarCloudService:
             response = requests.post(url_data['url'], data=data, files=files, timeout=30)
 
             if response.status_code in [200, 204]:
-                logger.debug(f"Successfully uploaded {upload_type} image ({len(resized_image)} bytes)")
+                logger.info(f"Uploaded {upload_type} image ({len(resized_image)} bytes)")
                 return True
             else:
                 logger.error(f"Failed to upload image: {response.status_code} - {response.text}")
@@ -1144,7 +1144,9 @@ class PolarCloudService:
             printer_status = status.get("status", self.PSTATE_IDLE)
             current_time = time.time()
 
-            if printer_status == self.PSTATE_PRINTING and self.is_printing_cloud_job and self.current_job_id:
+            # Use faster upload rate during printing, preparing, or paused states for cloud jobs
+            active_states = [self.PSTATE_PRINTING, self.PSTATE_PREPARING, self.PSTATE_PAUSED, self.PSTATE_SERIAL]
+            if printer_status in active_states and self.is_printing_cloud_job and self.current_job_id:
                 upload_type = "printing"
                 interval = self.image_upload_intervals['printing']
             else:
@@ -1156,14 +1158,25 @@ class PolarCloudService:
                 return
 
             image_data = self.capture_webcam_image()
-            if image_data:
-                if upload_type not in self.upload_urls:
-                    job_id = self.current_job_id if upload_type == "printing" else None
-                    self.request_upload_url(upload_type, job_id)
-                    time.sleep(1)
+            if not image_data:
+                logger.debug("No webcam image captured")
+                return
 
-                if self.upload_image_to_cloud(image_data, upload_type):
-                    self.last_image_upload[upload_type] = current_time
+            if upload_type not in self.upload_urls:
+                job_id = self.current_job_id if upload_type == "printing" else None
+                logger.info(f"Requesting upload URL for {upload_type}")
+                self.request_upload_url(upload_type, job_id)
+                # Wait for async response - check up to 5 seconds
+                for _ in range(10):
+                    time.sleep(0.5)
+                    if upload_type in self.upload_urls:
+                        break
+                else:
+                    logger.warning(f"Timeout waiting for upload URL for {upload_type}")
+                    return
+
+            if self.upload_image_to_cloud(image_data, upload_type):
+                self.last_image_upload[upload_type] = current_time
 
         except Exception as e:
             logger.error(f"Error handling image uploads: {e}")
@@ -1400,7 +1413,7 @@ class PolarCloudService:
             if self.is_printing_cloud_job and self.current_job_id:
                 job_progress = self.get_job_progress()
 
-                if printer_status == self.PSTATE_COMPLETE:
+                if printer_status in [self.PSTATE_COMPLETE, self.PSTATE_POSTPROCESSING]:
                     print_seconds = int(status.get("printSeconds", "0"))
                     self.send_job_completion(
                         self.current_job_id,
