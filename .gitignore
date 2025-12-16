@@ -1,0 +1,21 @@
+# Virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log
+
+# Local installation artifacts
+false/
+web/
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
