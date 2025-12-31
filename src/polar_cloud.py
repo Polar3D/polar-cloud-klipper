@@ -1464,6 +1464,9 @@ class PolarCloudService:
                         job_progress['file_size']
                     )
 
+                    # Reset Klipper's print state so it doesn't stay stuck in 'complete'
+                    self.reset_print_state()
+
                     self.is_printing_cloud_job = False
                     self.current_job_id = None
                     self.job_start_time = None
