@@ -10,7 +10,6 @@ including Creality K1/K1C/K1 Max which cannot install aiohttp.
 import json
 import logging
 import os
-import sys
 import subprocess
 import uuid
 import hashlib
@@ -79,9 +78,8 @@ if not logger.handlers:
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
-    stream_handler = logging.StreamHandler(sys.stdout)
-    stream_handler.setFormatter(formatter)
-    logger.addHandler(stream_handler)
+    # Note: We don't add a StreamHandler because the service script already
+    # redirects stdout to the log file, which would cause duplicate entries
 
 class PolarCloudService:
     # Polar Cloud status constants (as integers)
