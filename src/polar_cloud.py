@@ -19,12 +19,24 @@ import configparser
 import time
 import requests
 import io
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
-from cryptography.hazmat.backends import default_backend
 import socket
 import signal
 import threading
+
+# Try to import cryptography (preferred), fall back to rsa (pure Python)
+try:
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa as crypto_rsa, padding
+    from cryptography.hazmat.backends import default_backend
+    HAS_CRYPTOGRAPHY = True
+except ImportError:
+    HAS_CRYPTOGRAPHY = False
+    try:
+        import rsa as pyrsa
+        HAS_RSA = True
+    except ImportError:
+        HAS_RSA = False
+        print("WARNING: Neither cryptography nor rsa package available - authentication will fail")
 
 # Import socketio - use sync client for universal compatibility
 import socketio
@@ -39,10 +51,13 @@ except ImportError:
 
 
 def get_printer_data_path():
-    """Get the printer_data path, handling K1 and standard installations."""
-    # K1 series uses /usr/data/printer_data
+    """Get the printer_data path, handling various printer installations."""
+    # Creality K1 series uses /usr/data/printer_data
     if os.path.exists('/usr/data/printer_data'):
         return '/usr/data/printer_data'
+    # Anycubic Kobra S1 (Rinkhals) uses /userdata/app/gk/printer_data
+    if os.path.exists('/userdata/app/gk/printer_data'):
+        return '/userdata/app/gk/printer_data'
     # Standard installation uses ~/printer_data
     return os.path.expanduser('~/printer_data')
 
@@ -540,31 +555,83 @@ class PolarCloudService:
             logger.debug(f"Error writing status file: {e}")
 
     def ensure_keys(self):
-        """Generate or load RSA key pair"""
+        """Generate or load RSA key pair.
+
+        Supports both cryptography library (preferred) and pure-Python rsa library (fallback).
+        The rsa library is slower for key generation (~90s on ARM) but works on embedded systems
+        where cryptography cannot be installed (requires Rust compiler).
+        """
         key_file = os.path.join(PRINTER_DATA_PATH, 'config/polar_cloud_key.pem')
 
-        if os.path.exists(key_file):
-            with open(key_file, 'rb') as f:
-                self.private_key = serialization.load_pem_private_key(
-                    f.read(), password=None, backend=default_backend()
+        if HAS_CRYPTOGRAPHY:
+            # Use cryptography library (faster, preferred)
+            if os.path.exists(key_file):
+                with open(key_file, 'rb') as f:
+                    self.private_key = serialization.load_pem_private_key(
+                        f.read(), password=None, backend=default_backend()
+                    )
+            else:
+                logger.info("Generating RSA key pair (using cryptography)...")
+                self.private_key = crypto_rsa.generate_private_key(
+                    public_exponent=65537,
+                    key_size=2048,
+                    backend=default_backend()
                 )
+
+                with open(key_file, 'wb') as f:
+                    f.write(self.private_key.private_bytes(
+                        encoding=serialization.Encoding.PEM,
+                        format=serialization.PrivateFormat.PKCS8,
+                        encryption_algorithm=serialization.NoEncryption()
+                    ))
+
+                os.chmod(key_file, 0o600)
+                logger.info("RSA key pair generated successfully")
+
+            self.public_key = self.private_key.public_key()
+            self._use_pyrsa = False
+
+        elif HAS_RSA:
+            # Use pure-Python rsa library (slower, but works on embedded systems)
+            if os.path.exists(key_file):
+                with open(key_file, 'rb') as f:
+                    pem_data = f.read()
+                    self.private_key = pyrsa.PrivateKey.load_pkcs1(pem_data)
+                    self.public_key = pyrsa.PublicKey(self.private_key.n, self.private_key.e)
+            else:
+                logger.info("Generating RSA key pair (using pure-Python rsa - this may take ~90 seconds)...")
+                (self.public_key, self.private_key) = pyrsa.newkeys(2048)
+                logger.info("RSA key pair generated successfully")
+
+                # Save in PKCS#1 format (what pyrsa uses)
+                with open(key_file, 'wb') as f:
+                    f.write(self.private_key.save_pkcs1())
+
+                os.chmod(key_file, 0o600)
+
+            self._use_pyrsa = True
         else:
-            self.private_key = rsa.generate_private_key(
-                public_exponent=65537,
-                key_size=2048,
-                backend=default_backend()
+            raise RuntimeError("No RSA library available. Install 'cryptography' or 'rsa' package.")
+
+    def sign_challenge(self, challenge):
+        """Sign a challenge string with the private key.
+
+        Returns the raw signature bytes.
+        """
+        challenge_bytes = challenge.encode('utf-8')
+
+        if HAS_CRYPTOGRAPHY and not getattr(self, '_use_pyrsa', False):
+            # Use cryptography library
+            return self.private_key.sign(
+                challenge_bytes,
+                padding.PKCS1v15(),
+                hashes.SHA256()
             )
-
-            with open(key_file, 'wb') as f:
-                f.write(self.private_key.private_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PrivateFormat.PKCS8,
-                    encryption_algorithm=serialization.NoEncryption()
-                ))
-
-            os.chmod(key_file, 0o600)
-
-        self.public_key = self.private_key.public_key()
+        elif HAS_RSA:
+            # Use pure-Python rsa library
+            return pyrsa.sign(challenge_bytes, self.private_key, 'SHA-256')
+        else:
+            raise RuntimeError("No RSA library available")
 
     def get_current_version(self):
         """Get current version from git tags"""
@@ -1191,13 +1258,23 @@ class PolarCloudService:
         except Exception as e:
             logger.error(f"Error handling image uploads: {e}")
 
-    def register_printer(self, username, pin):
-        """Register printer with Polar Cloud"""
-        try:
-            public_key_pem = self.public_key.public_bytes(
+    def get_public_key_pem(self):
+        """Get the public key in PEM format, supporting both cryptography and rsa libraries."""
+        if HAS_CRYPTOGRAPHY and not getattr(self, '_use_pyrsa', False):
+            return self.public_key.public_bytes(
                 encoding=serialization.Encoding.PEM,
                 format=serialization.PublicFormat.SubjectPublicKeyInfo
             ).decode('utf-8')
+        elif HAS_RSA:
+            # pyrsa uses PKCS#1 format
+            return self.public_key.save_pkcs1().decode('utf-8')
+        else:
+            raise RuntimeError("No RSA library available")
+
+    def register_printer(self, username, pin):
+        """Register printer with Polar Cloud"""
+        try:
+            public_key_pem = self.get_public_key_pem()
 
             mfg_code = self.config.get('polar_cloud', 'manufacturer', fallback='kl')
 
@@ -1231,18 +1308,15 @@ class PolarCloudService:
             webcam_settings = self.get_webcam_settings()
             mfg_code = self.config.get('polar_cloud', 'manufacturer', fallback='kl')
 
+            # Sign the challenge with RSA
+            signature = self.sign_challenge(self.challenge)
+
             hello_data = {
                 "serialNumber": self.serial_number,
                 "protocol": "2",
                 "MAC": self.get_mac_address(),
                 "localIP": self.get_ip_address(),
-                "signature": base64.b64encode(
-                    self.private_key.sign(
-                        self.challenge.encode('utf-8'),
-                        padding.PKCS1v15(),
-                        hashes.SHA256()
-                    )
-                ).decode('utf-8'),
+                "signature": base64.b64encode(signature).decode('utf-8'),
                 "mfgSn": f"{mfg_code.upper()}-" + self.get_mac_address().replace(":", ""),
                 "printerMake": self.config.get('polar_cloud', 'printer_type', fallback='Cartesian'),
                 "version": self.running_version,
