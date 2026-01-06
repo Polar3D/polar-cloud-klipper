@@ -199,10 +199,8 @@ install_polar_cloud() {
     # Create install directory
     mkdir -p "$INSTALL_DIR"
 
-    # Download from branch (use anycubic_kobra_s1 for embedded support, fallback to main)
-    BRANCH="anycubic_kobra_s1"
-    BRANCH_URL="https://github.com/Polar3D/polar-cloud-klipper/archive/refs/heads/${BRANCH}.tar.gz"
-    MAIN_URL="https://github.com/Polar3D/polar-cloud-klipper/archive/refs/heads/main.tar.gz"
+    # Download from main branch
+    DOWNLOAD_URL="https://github.com/Polar3D/polar-cloud-klipper/archive/refs/heads/main.tar.gz"
     TARBALL="/tmp/polar-cloud-klipper.tar.gz"
 
     print_info "Downloading Polar Cloud Klipper..."
@@ -210,19 +208,15 @@ install_polar_cloud() {
 
     # Use curl with --fail to detect HTTP errors, and follow redirects
     if command -v curl >/dev/null 2>&1; then
-        if curl -fsSL -o "$TARBALL" "$BRANCH_URL" 2>/dev/null; then
-            print_success "Downloaded from $BRANCH branch"
-        elif curl -fsSL -o "$TARBALL" "$MAIN_URL" 2>/dev/null; then
-            print_warning "Branch not found, downloaded from main branch"
+        if curl -fsSL -o "$TARBALL" "$DOWNLOAD_URL" 2>/dev/null; then
+            print_success "Downloaded from GitHub"
         else
             print_error "Failed to download from GitHub"
             exit 1
         fi
     elif command -v wget >/dev/null 2>&1; then
-        if wget -q -O "$TARBALL" "$BRANCH_URL" 2>/dev/null; then
-            print_success "Downloaded from $BRANCH branch"
-        elif wget -q -O "$TARBALL" "$MAIN_URL" 2>/dev/null; then
-            print_warning "Branch not found, downloaded from main branch"
+        if wget -q -O "$TARBALL" "$DOWNLOAD_URL" 2>/dev/null; then
+            print_success "Downloaded from GitHub"
         else
             print_error "Failed to download from GitHub"
             exit 1
