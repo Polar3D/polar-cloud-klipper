@@ -171,21 +171,22 @@ install_polar_cloud() {
     # Create install directory
     mkdir -p "$INSTALL_DIR"
 
-    # Download release tarball
-    RELEASE_URL="https://github.com/Polar3D/polar-cloud-klipper/releases/latest/download/polar-cloud-klipper.tar.gz"
+    # Download from branch (use anycubic_kobra_s1 for embedded support, fallback to main)
+    BRANCH="anycubic_kobra_s1"
+    BRANCH_URL="https://github.com/Polar3D/polar-cloud-klipper/archive/refs/heads/${BRANCH}.tar.gz"
+    MAIN_URL="https://github.com/Polar3D/polar-cloud-klipper/archive/refs/heads/main.tar.gz"
     TARBALL="/tmp/polar-cloud-klipper.tar.gz"
 
     print_info "Downloading Polar Cloud Klipper..."
     if [ "$DOWNLOAD_CMD" = "curl -sSL" ]; then
-        curl -sSL -o "$TARBALL" "$RELEASE_URL" || {
-            # Fallback to downloading from main branch
-            print_warning "Release tarball not found, downloading from main branch..."
-            curl -sSL -o "$TARBALL" "https://github.com/Polar3D/polar-cloud-klipper/archive/refs/heads/main.tar.gz"
+        curl -sSL -o "$TARBALL" "$BRANCH_URL" || {
+            print_warning "Branch not found, downloading from main branch..."
+            curl -sSL -o "$TARBALL" "$MAIN_URL"
         }
     else
-        wget -qO "$TARBALL" "$RELEASE_URL" || {
-            print_warning "Release tarball not found, downloading from main branch..."
-            wget -qO "$TARBALL" "https://github.com/Polar3D/polar-cloud-klipper/archive/refs/heads/main.tar.gz"
+        wget -qO "$TARBALL" "$BRANCH_URL" || {
+            print_warning "Branch not found, downloading from main branch..."
+            wget -qO "$TARBALL" "$MAIN_URL"
         }
     fi
 
