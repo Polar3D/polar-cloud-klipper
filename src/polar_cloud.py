@@ -1130,7 +1130,9 @@ class PolarCloudService:
                 input_path = f_in.name
 
             # Try different quality levels to get under max_size
-            for quality in [25, 20, 15, 10, 5]:
+            # Note: ffmpeg -q:v uses 2-31 scale where lower = better quality
+            # Start with quality 5 (~JPEG 80) and go down to 31 (lowest quality)
+            for quality in [5, 10, 15, 20, 25, 31]:
                 output_path = input_path + f'.q{quality}.jpg'
                 try:
                     # Use ffmpeg to re-encode JPEG with lower quality
