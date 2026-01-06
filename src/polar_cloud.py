@@ -1012,12 +1012,30 @@ class PolarCloudService:
     def capture_webcam_image(self):
         """Capture image from webcam"""
         try:
+            # Get max image size from config
+            max_size = int(self.config.get('polar_cloud', 'max_image_size', fallback='150000'))
+
+            # Try Moonraker webcam endpoint first
             response = requests.get(f"{self.moonraker_url}/webcam/?action=snapshot", timeout=10)
-            if response.status_code == 200:
+            if response.status_code == 200 and len(response.content) <= max_size:
                 return response.content
 
+            # Try direct mjpg-streamer with quality parameters to reduce size
+            # mjpg-streamer supports ?quality=N parameter (1-100)
+            for quality in [50, 30, 20]:
+                try:
+                    response = requests.get(f"http://localhost:8080/?action=snapshot&quality={quality}", timeout=10)
+                    if response.status_code == 200 and len(response.content) <= max_size:
+                        logger.debug(f"Captured webcam image with quality={quality}, size={len(response.content)}")
+                        return response.content
+                except:
+                    pass
+
+            # Fallback to standard snapshot (may be too large without PIL)
             response = requests.get("http://localhost:8080/?action=snapshot", timeout=10)
             if response.status_code == 200:
+                if len(response.content) > max_size and not HAS_PIL:
+                    logger.warning(f"Webcam image ({len(response.content)} bytes) exceeds max size ({max_size}). PIL not available for resizing.")
                 return response.content
 
             logger.debug("No webcam available for snapshot")
@@ -1077,15 +1095,115 @@ class PolarCloudService:
             'rotation': 0
         }
 
-    def resize_image(self, image_data, max_size=None):
-        """Resize and transform image to fit within max_size bytes"""
-        if not HAS_PIL:
+    def resize_image_ffmpeg(self, image_data, max_size):
+        """Resize image using ffmpeg when PIL is not available"""
+        import subprocess
+        import tempfile
+        import os
+
+        # Find ffmpeg - check common embedded system paths
+        ffmpeg_paths = [
+            '/ac_lib/lib/third_bin/ffmpeg',  # Anycubic Kobra S1
+            '/usr/bin/ffmpeg',
+            '/usr/local/bin/ffmpeg',
+            'ffmpeg'
+        ]
+
+        ffmpeg_cmd = None
+        for path in ffmpeg_paths:
+            try:
+                result = subprocess.run([path, '-version'], capture_output=True, timeout=5)
+                if result.returncode == 0:
+                    ffmpeg_cmd = path
+                    break
+            except:
+                continue
+
+        if not ffmpeg_cmd:
+            logger.debug("ffmpeg not found, cannot resize image")
             return image_data
 
         try:
-            if not max_size:
-                max_size = int(self.config.get('polar_cloud', 'max_image_size', fallback='150000'))
+            # Create temp files for input/output
+            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as f_in:
+                f_in.write(image_data)
+                input_path = f_in.name
 
+            # Try different quality levels to get under max_size
+            for quality in [25, 20, 15, 10, 5]:
+                output_path = input_path + f'.q{quality}.jpg'
+                try:
+                    # Use ffmpeg to re-encode JPEG with lower quality
+                    result = subprocess.run([
+                        ffmpeg_cmd, '-y', '-i', input_path,
+                        '-q:v', str(quality),  # Lower = better quality, 2-31 range
+                        output_path
+                    ], capture_output=True, timeout=30)
+
+                    if result.returncode == 0 and os.path.exists(output_path):
+                        with open(output_path, 'rb') as f:
+                            compressed_data = f.read()
+
+                        os.unlink(output_path)
+
+                        if len(compressed_data) <= max_size:
+                            logger.debug(f"Compressed image to {len(compressed_data)} bytes with ffmpeg quality={quality}")
+                            os.unlink(input_path)
+                            return compressed_data
+                except Exception as e:
+                    logger.debug(f"ffmpeg compression attempt failed: {e}")
+                    if os.path.exists(output_path):
+                        os.unlink(output_path)
+
+            # Try scaling down if quality reduction wasn't enough
+            for scale in ['640:480', '480:360', '320:240']:
+                output_path = input_path + f'.scaled.jpg'
+                try:
+                    result = subprocess.run([
+                        ffmpeg_cmd, '-y', '-i', input_path,
+                        '-vf', f'scale={scale}',
+                        '-q:v', '10',
+                        output_path
+                    ], capture_output=True, timeout=30)
+
+                    if result.returncode == 0 and os.path.exists(output_path):
+                        with open(output_path, 'rb') as f:
+                            compressed_data = f.read()
+
+                        os.unlink(output_path)
+
+                        if len(compressed_data) <= max_size:
+                            logger.debug(f"Scaled image to {scale}, size={len(compressed_data)} bytes")
+                            os.unlink(input_path)
+                            return compressed_data
+                except Exception as e:
+                    logger.debug(f"ffmpeg scaling attempt failed: {e}")
+                    if os.path.exists(output_path):
+                        os.unlink(output_path)
+
+            os.unlink(input_path)
+            logger.warning("Could not compress image to acceptable size with ffmpeg")
+            return image_data
+
+        except Exception as e:
+            logger.error(f"Error using ffmpeg for image compression: {e}")
+            return image_data
+
+    def resize_image(self, image_data, max_size=None):
+        """Resize and transform image to fit within max_size bytes"""
+        if not max_size:
+            max_size = int(self.config.get('polar_cloud', 'max_image_size', fallback='150000'))
+
+        # If image is already small enough, return as-is
+        if len(image_data) <= max_size:
+            return image_data
+
+        # Try PIL first if available
+        if not HAS_PIL:
+            # Fall back to ffmpeg-based compression
+            return self.resize_image_ffmpeg(image_data, max_size)
+
+        try:
             image = Image.open(io.BytesIO(image_data))
 
             if image.mode != 'RGB':

@@ -261,6 +261,7 @@ server_url = https://printer4.polar3d.com
 # serial_number will be set after registration
 machine_type = Cartesian
 manufacturer = ac
+printer_type = Anycubic Kobra S1
 max_image_size = 150000
 webcam_enabled = true
 verbose = false
