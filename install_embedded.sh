@@ -125,6 +125,11 @@ check_python_deps() {
         MISSING_DEPS="$MISSING_DEPS python-socketio"
     fi
 
+    # Check websocket-client (required for Socket.IO websocket transport)
+    if ! $PYTHON_CMD -c "import websocket" 2>/dev/null; then
+        MISSING_DEPS="$MISSING_DEPS websocket-client"
+    fi
+
     # Check for RSA library (cryptography or rsa)
     if ! $PYTHON_CMD -c "import cryptography" 2>/dev/null; then
         if ! $PYTHON_CMD -c "import rsa" 2>/dev/null; then
