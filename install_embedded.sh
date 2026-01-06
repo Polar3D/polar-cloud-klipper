@@ -147,14 +147,37 @@ check_python_deps() {
 
         for pkg in $MISSING_DEPS; do
             print_info "Installing $pkg..."
-            if $PYTHON_CMD -m pip install --user "$pkg" 2>/dev/null; then
+            # Try system-wide install first (for root on embedded systems)
+            # Use --break-system-packages for newer pip versions that require it
+            if $PYTHON_CMD -m pip install "$pkg" --break-system-packages 2>/dev/null; then
                 print_success "Installed $pkg"
+            elif $PYTHON_CMD -m pip install "$pkg" 2>/dev/null; then
+                print_success "Installed $pkg"
+            elif $PYTHON_CMD -m pip install --user "$pkg" 2>/dev/null; then
+                print_success "Installed $pkg (user)"
             else
                 print_error "Failed to install $pkg"
                 print_error "Please install manually: $PYTHON_CMD -m pip install $pkg"
                 exit 1
             fi
         done
+
+        # Verify all dependencies are now importable
+        print_info "Verifying installed packages..."
+        VERIFY_FAILED=""
+        $PYTHON_CMD -c "import requests" 2>/dev/null || VERIFY_FAILED="$VERIFY_FAILED requests"
+        $PYTHON_CMD -c "import socketio" 2>/dev/null || VERIFY_FAILED="$VERIFY_FAILED socketio"
+        $PYTHON_CMD -c "import websocket" 2>/dev/null || VERIFY_FAILED="$VERIFY_FAILED websocket"
+
+        if [ -n "$VERIFY_FAILED" ]; then
+            print_error "Package verification failed for:$VERIFY_FAILED"
+            print_error "Packages were installed but Python cannot import them."
+            print_info "This may be a PATH issue. Try running:"
+            print_info "  $PYTHON_CMD -m pip show websocket-client"
+            print_info "  $PYTHON_CMD -c \"import sys; print(sys.path)\""
+            exit 1
+        fi
+        print_success "All packages verified"
     else
         print_success "All Python dependencies available"
     fi
