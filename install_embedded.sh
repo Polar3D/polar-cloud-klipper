@@ -178,16 +178,37 @@ install_polar_cloud() {
     TARBALL="/tmp/polar-cloud-klipper.tar.gz"
 
     print_info "Downloading Polar Cloud Klipper..."
-    if [ "$DOWNLOAD_CMD" = "curl -sSL" ]; then
-        curl -sSL -o "$TARBALL" "$BRANCH_URL" || {
-            print_warning "Branch not found, downloading from main branch..."
-            curl -sSL -o "$TARBALL" "$MAIN_URL"
-        }
+    rm -f "$TARBALL"
+
+    # Use curl with --fail to detect HTTP errors, and follow redirects
+    if command -v curl >/dev/null 2>&1; then
+        if curl -fsSL -o "$TARBALL" "$BRANCH_URL" 2>/dev/null; then
+            print_success "Downloaded from $BRANCH branch"
+        elif curl -fsSL -o "$TARBALL" "$MAIN_URL" 2>/dev/null; then
+            print_warning "Branch not found, downloaded from main branch"
+        else
+            print_error "Failed to download from GitHub"
+            exit 1
+        fi
+    elif command -v wget >/dev/null 2>&1; then
+        if wget -q -O "$TARBALL" "$BRANCH_URL" 2>/dev/null; then
+            print_success "Downloaded from $BRANCH branch"
+        elif wget -q -O "$TARBALL" "$MAIN_URL" 2>/dev/null; then
+            print_warning "Branch not found, downloaded from main branch"
+        else
+            print_error "Failed to download from GitHub"
+            exit 1
+        fi
     else
-        wget -qO "$TARBALL" "$BRANCH_URL" || {
-            print_warning "Branch not found, downloading from main branch..."
-            wget -qO "$TARBALL" "$MAIN_URL"
-        }
+        print_error "Neither curl nor wget available"
+        exit 1
+    fi
+
+    # Verify download is a valid gzip file
+    if ! gzip -t "$TARBALL" 2>/dev/null; then
+        print_error "Downloaded file is not a valid archive"
+        cat "$TARBALL" | head -1
+        exit 1
     fi
 
     print_info "Extracting files..."
