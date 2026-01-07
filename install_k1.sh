@@ -277,13 +277,14 @@ install_venv() {
 
     "$VENV_DIR/bin/pip" install --no-cache-dir 'configparser>=5.0' 2>&1 || true
 
-    # Pillow - may need to use system version
-    "$VENV_DIR/bin/pip" install --no-cache-dir 'Pillow>=8.0' 2>&1 || {
-        print_warning "Pillow pip install failed, trying system package..."
+    # Pillow - try binary only, fall back to ffmpeg for image compression
+    "$VENV_DIR/bin/pip" install --no-cache-dir --only-binary=:all: 'Pillow>=8.0' 2>&1 || {
         if python3 -c "import PIL" 2>/dev/null; then
             print_success "Using system Pillow"
+        elif which ffmpeg >/dev/null 2>&1; then
+            print_warning "Pillow not available - using ffmpeg for image compression"
         else
-            print_warning "Pillow not available - webcam features may not work"
+            print_warning "Pillow not available - webcam features may be limited"
         fi
     }
 
