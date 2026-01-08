@@ -32,7 +32,7 @@ machine_type = Cartesian
 # or check https://polar3d.com/api/v1/printer_makes for the full list
 printer_type = Cartesian
 
-# Manufacturer code: kl (Generic Klipper), el (Elegoo), cre (Creality), ac (Anycubic)
+# Manufacturer code: kl (Generic Klipper), el (Elegoo), CR (Creality), ac (Anycubic)
 manufacturer = kl
 
 # Image Settings

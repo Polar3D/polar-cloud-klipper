@@ -144,6 +144,7 @@ class PolarCloudService:
         # Image upload functionality
         self.upload_urls = {}
         self.upload_url_received_time = {}
+        self.upload_url_job_id = {}  # Track which job_id each upload URL was requested for
         self.last_image_upload = {}
         self.image_upload_intervals = {
             'idle': 60,
@@ -855,15 +856,9 @@ class PolarCloudService:
                     # Calculate progress from file position (more accurate than duration)
                     if file_size > 0:
                         progress_pct = (file_position / file_size) * 100
-                        if self.current_job_id:
-                            progress_detail = f"Printing Job: {self.current_job_id} Percent Complete: {progress_pct:.1f}%"
-                        else:
-                            progress_detail = f"Printing Job: {filename.split('/')[-1] if filename else 'Unknown'} Percent Complete: {progress_pct:.1f}%"
+                        progress_detail = f"Printing: {progress_pct:.1f}%"
                     else:
-                        if self.current_job_id:
-                            progress_detail = f"Printing Job: {self.current_job_id}"
-                        else:
-                            progress_detail = f"Printing Job: {filename.split('/')[-1] if filename else 'Unknown'}"
+                        progress_detail = "Printing"
 
                 elif state == 'paused':
                     status = self.PSTATE_PAUSED
@@ -882,10 +877,7 @@ class PolarCloudService:
                     # Calculate progress from file position (more accurate than duration)
                     if file_size > 0:
                         progress_pct = (file_position / file_size) * 100
-                        if self.current_job_id:
-                            progress_detail = f"Printing Job: {self.current_job_id} Percent Complete: {progress_pct:.1f}%"
-                        else:
-                            progress_detail = f"Printing Job: {filename.split('/')[-1] if filename else 'Unknown'} Percent Complete: {progress_pct:.1f}%"
+                        progress_detail = f"Paused: {progress_pct:.1f}%"
 
                 elif state == 'complete':
                     if self.is_printing_cloud_job and self.current_job_id:
@@ -906,10 +898,7 @@ class PolarCloudService:
                     if stats.get('print_start_time'):
                         start_time = datetime.fromtimestamp(stats['print_start_time']).isoformat() + 'Z'
 
-                    if self.current_job_id:
-                        progress_detail = f"Printing Job: {self.current_job_id} Percent Complete: 100.0%"
-                    else:
-                        progress_detail = f"Printing Job: {filename.split('/')[-1] if filename else 'Unknown'} Percent Complete: 100.0%"
+                    progress_detail = "Complete: 100.0%"
 
                 elif state == 'error':
                     status = self.PSTATE_ERROR
@@ -1359,14 +1348,29 @@ class PolarCloudService:
                 logger.debug("No webcam image captured")
                 return
 
-            if upload_type not in self.upload_urls:
-                job_id = self.current_job_id if upload_type == "printing" else None
-                logger.info(f"Requesting upload URL for {upload_type}")
+            # For printing uploads, check if job_id has changed and request new URL if needed
+            job_id = self.current_job_id if upload_type == "printing" else None
+            cached_job_id = self.upload_url_job_id.get(upload_type)
+
+            # Request new URL if we don't have one, or if the job_id changed for printing uploads
+            need_new_url = upload_type not in self.upload_urls
+            if upload_type == "printing" and cached_job_id != job_id:
+                need_new_url = True
+                if cached_job_id:
+                    logger.info(f"Job ID changed from {cached_job_id} to {job_id}, requesting new upload URL")
+
+            if need_new_url:
+                # Clear old URL if exists
+                if upload_type in self.upload_urls:
+                    del self.upload_urls[upload_type]
+                logger.info(f"Requesting upload URL for {upload_type}" + (f" (job_id={job_id})" if job_id else ""))
                 self.request_upload_url(upload_type, job_id)
                 # Wait for async response - check up to 5 seconds
                 for _ in range(10):
                     time.sleep(0.5)
                     if upload_type in self.upload_urls:
+                        # Track which job_id this URL is for
+                        self.upload_url_job_id[upload_type] = job_id
                         break
                 else:
                     logger.warning(f"Timeout waiting for upload URL for {upload_type}")
@@ -1908,6 +1912,7 @@ class PolarCloudService:
             self.hello_sent = False
 
             self.upload_urls.clear()
+            self.upload_url_job_id.clear()
 
             logger.info("Printer reset to unregistered state")
 

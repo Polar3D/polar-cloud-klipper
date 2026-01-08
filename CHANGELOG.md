@@ -35,7 +35,7 @@ All notable changes to this project will be documented in this file.
 - Bootstrap script for easier curl-based installation
 
 ### Changed
-- **Manufacturer codes** now use proper Polar Cloud format (`kl`, `el`, `cre`, `ac`)
+- **Manufacturer codes** now use proper Polar Cloud format (`kl`, `el`, `CR`, `ac`)
 - **Improved error messaging** - connection failures now show specific error details instead of "Unknown error"
 - **Faster service shutdown** - added 5-second timeout to prevent hanging during stop/restart
 - **Better dropdown styling** for Windows compatibility (dark background on select options)

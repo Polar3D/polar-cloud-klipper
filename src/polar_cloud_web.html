@@ -396,7 +396,7 @@
                         <select id="manufacturer">
                             <option value="kl">Generic Klipper</option>
                             <option value="el">Elegoo</option>
-                            <option value="cre">Creality</option>
+                            <option value="CR">Creality</option>
                             <option value="ac">Anycubic</option>
                         </select>
                     </div>
@@ -463,13 +463,14 @@
         function normalizeManufacturer(value) {
             if (!value) return 'kl';
             const lower = value.toLowerCase();
-            if (lower === 'kl' || lower === 'el' || lower === 'cre' || lower === 'ac') {
-                return lower;
+            const upper = value.toUpperCase();
+            if (lower === 'kl' || lower === 'el' || lower === 'ac' || upper === 'CR') {
+                return upper === 'CR' ? 'CR' : lower;
             }
             // Map old values to new codes
             if (lower === 'generic' || lower.includes('klipper')) return 'kl';
             if (lower === 'elegoo' || lower.includes('elegoo')) return 'el';
-            if (lower === 'creality' || lower.includes('creality')) return 'cre';
+            if (lower === 'creality' || lower.includes('creality') || lower === 'cre') return 'CR';
             if (lower === 'anycubic' || lower.includes('anycubic')) return 'ac';
             return 'kl';
         }
@@ -893,7 +894,7 @@
                         const makeLower = make.toLowerCase();
                         if (manufacturer === 'el') {
                             return makeLower.includes('elegoo') || makeLower.includes('neptune');
-                        } else if (manufacturer === 'cre') {
+                        } else if (manufacturer === 'CR') {
                             return makeLower.includes('creality') || makeLower.includes('ender') || makeLower.includes('cr-');
                         } else if (manufacturer === 'ac') {
                             return makeLower.includes('anycubic') || makeLower.includes('kobra') || makeLower.includes('vyper') || makeLower.includes('mega') || makeLower.includes('chiron');
