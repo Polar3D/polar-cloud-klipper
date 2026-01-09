@@ -1185,13 +1185,22 @@ class PolarCloudService:
         if not max_size:
             max_size = int(self.config.get('polar_cloud', 'max_image_size', fallback='150000'))
 
-        # If image is already small enough, return as-is
-        if len(image_data) <= max_size:
+        # Get webcam transform settings
+        webcam_settings = self.get_webcam_settings()
+        flip_horizontal = webcam_settings['flip_horizontal']
+        flip_vertical = webcam_settings['flip_vertical']
+        rotation = webcam_settings['rotation']
+        needs_transform = flip_horizontal or flip_vertical or rotation
+
+        # If image is already small enough and no transforms needed, return as-is
+        if len(image_data) <= max_size and not needs_transform:
             return image_data
 
         # Try PIL first if available
         if not HAS_PIL:
-            # Fall back to ffmpeg-based compression
+            # Fall back to ffmpeg-based compression (note: ffmpeg path doesn't apply transforms yet)
+            if needs_transform:
+                logger.warning("Image transforms required but PIL not available - image may be incorrectly oriented")
             return self.resize_image_ffmpeg(image_data, max_size)
 
         try:
@@ -1200,11 +1209,7 @@ class PolarCloudService:
             if image.mode != 'RGB':
                 image = image.convert('RGB')
 
-            webcam_settings = self.get_webcam_settings()
-            flip_horizontal = webcam_settings['flip_horizontal']
-            flip_vertical = webcam_settings['flip_vertical']
-            rotation = webcam_settings['rotation']
-
+            # Apply transforms
             if flip_horizontal:
                 image = image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
 
