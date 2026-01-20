@@ -1123,13 +1123,58 @@ class PolarCloudService:
             logger.error(f"Error sending version info: {e}")
 
     def get_moonraker_data(self, endpoint):
-        """Get data from Moonraker API"""
+        """Get data from Moonraker API.
+
+        Uses WebSocket cached data when available, falls back to HTTP.
+        """
+        # Try to use cached WebSocket data for common queries
+        if self.moonraker_conn and self.moonraker_conn.connected:
+            cached = self._get_cached_moonraker_data(endpoint)
+            if cached is not None:
+                return cached
+
+        # Fall back to HTTP
         try:
             response = requests.get(f"{self.moonraker_url}/{endpoint}", timeout=5)
             if response.status_code == 200:
                 return response.json()
         except Exception as e:
             logger.error(f"Error getting Moonraker data from {endpoint}: {e}")
+        return None
+
+    def _get_cached_moonraker_data(self, endpoint):
+        """Get data from WebSocket cache if available."""
+        state = self.moonraker_conn.get_printer_state()
+        if not state:
+            return None
+
+        # Map common endpoints to cached data
+        # Format: printer/objects/query?object1&object2
+        if endpoint.startswith("printer/objects/query?"):
+            query_part = endpoint.split("?", 1)[1]
+            objects = query_part.split("&")
+
+            result_status = {}
+            for obj in objects:
+                # Handle objects like "heater_bed" or with sub-keys
+                obj_name = obj.split("=")[0] if "=" in obj else obj
+                if obj_name in state:
+                    result_status[obj_name] = state[obj_name]
+
+            if result_status:
+                return {'result': {'status': result_status}}
+
+        elif endpoint == "printer/info":
+            # For printer/info, we need webhooks state
+            if 'webhooks' in state:
+                webhooks = state['webhooks']
+                return {
+                    'result': {
+                        'state': webhooks.get('state', 'ready'),
+                        'state_message': webhooks.get('state_message', '')
+                    }
+                }
+
         return None
 
     def get_job_progress(self):
@@ -2008,16 +2053,11 @@ class PolarCloudService:
         """
         try:
             logger.info("Resetting print state with SDCARD_RESET_FILE")
-            response = requests.post(
-                f"{self.moonraker_url}/printer/gcode/script",
-                json={"script": "SDCARD_RESET_FILE"},
-                timeout=10
-            )
-            if response.status_code == 200:
+            if self._send_moonraker_command('printer.gcode.script', {'script': 'SDCARD_RESET_FILE'}):
                 logger.info("Print state reset successfully")
                 return True
             else:
-                logger.warning(f"Failed to reset print state: {response.status_code}")
+                logger.warning("Failed to reset print state")
                 return False
         except Exception as e:
             logger.error(f"Error resetting print state: {e}")
@@ -2163,20 +2203,14 @@ class PolarCloudService:
 
                     logger.info(f"Downloaded gcode file to {filepath}")
 
-                    print_response = requests.post(
-                        f"{self.moonraker_url}/printer/print/start",
-                        json={"filename": filename},
-                        timeout=10
-                    )
-
-                    if print_response.status_code == 200:
+                    if self._send_moonraker_command('printer.print.start', {'filename': filename}):
                         self.is_printing_cloud_job = True
                         self.current_job_id = job_id
                         self.job_is_preparing = False
                         self.job_start_time = time.time()
                         logger.info(f"Started printing cloud job {job_id}")
                     else:
-                        logger.error(f"Failed to start print: {print_response.text}")
+                        logger.error("Failed to start print")
                 else:
                     logger.error(f"Failed to download gcode file: {response.status_code}")
 
@@ -2188,14 +2222,52 @@ class PolarCloudService:
         except Exception as e:
             logger.error(f"Error executing print command: {e}")
 
+    def _send_moonraker_command(self, method, params=None, timeout=10):
+        """Send a command to Moonraker via WebSocket or HTTP fallback.
+
+        Returns True on success, False on failure.
+        """
+        # Try WebSocket first
+        if self.moonraker_conn and self.moonraker_conn.connected:
+            response = self.moonraker_conn.send_request_sync(method, params, timeout=timeout)
+            if response is not None:
+                if 'error' in response:
+                    logger.error(f"Moonraker command {method} failed: {response['error']}")
+                    return False
+                return True
+
+        # Fall back to HTTP
+        # Map JSON-RPC methods to HTTP endpoints
+        http_map = {
+            'printer.print.cancel': ('POST', '/printer/print/cancel'),
+            'printer.print.pause': ('POST', '/printer/print/pause'),
+            'printer.print.resume': ('POST', '/printer/print/resume'),
+            'printer.print.start': ('POST', '/printer/print/start'),
+            'printer.gcode.script': ('POST', '/printer/gcode/script'),
+        }
+
+        if method in http_map:
+            http_method, endpoint = http_map[method]
+            try:
+                if http_method == 'POST':
+                    response = requests.post(
+                        f"{self.moonraker_url}{endpoint}",
+                        json=params,
+                        timeout=timeout
+                    )
+                    return response.status_code == 200
+            except Exception as e:
+                logger.error(f"HTTP fallback for {method} failed: {e}")
+
+        return False
+
     def execute_cancel_command(self):
         """Execute cancel command via Moonraker API"""
         try:
             if self.is_printing_cloud_job and self.current_job_id:
                 self.job_is_cancelling = True
 
-            response = requests.post(f"{self.moonraker_url}/printer/print/cancel", timeout=10)
-            if response.status_code == 200:
+            if self._send_moonraker_command('printer.print.cancel'):
                 logger.info("Print cancelled successfully")
 
                 if self.is_printing_cloud_job and self.current_job_id:
@@ -2209,7 +2281,7 @@ class PolarCloudService:
                     self.job_is_cancelling = False
                 self.job_is_preparing = False
             else:
-                logger.error(f"Failed to cancel print: {response.text}")
+                logger.error("Failed to cancel print")
                 self.job_is_cancelling = False
                 self.job_is_preparing = False
         except Exception as e:
@@ -2219,22 +2291,20 @@ class PolarCloudService:
     def execute_pause_command(self):
         """Execute pause command via Moonraker API"""
         try:
-            response = requests.post(f"{self.moonraker_url}/printer/print/pause", timeout=10)
-            if response.status_code == 200:
+            if self._send_moonraker_command('printer.print.pause'):
                 logger.info("Print paused successfully")
             else:
-                logger.error(f"Failed to pause print: {response.text}")
+                logger.error("Failed to pause print")
         except Exception as e:
             logger.error(f"Error executing pause command: {e}")
 
     def execute_resume_command(self):
         """Execute resume command via Moonraker API"""
         try:
-            response = requests.post(f"{self.moonraker_url}/printer/print/resume", timeout=10)
-            if response.status_code == 200:
+            if self._send_moonraker_command('printer.print.resume'):
                 logger.info("Print resumed successfully")
             else:
-                logger.error(f"Failed to resume print: {response.text}")
+                logger.error("Failed to resume print")
         except Exception as e:
             logger.error(f"Error executing resume command: {e}")
 
@@ -2329,27 +2399,19 @@ class PolarCloudService:
         try:
             if 'tool0' in temp_data:
                 temp = temp_data['tool0']
-                response = requests.post(
-                    f"{self.moonraker_url}/printer/gcode/script",
-                    json={"script": f"SET_HEATER_TEMPERATURE HEATER=extruder TARGET={temp}"},
-                    timeout=10
-                )
-                if response.status_code == 200:
+                script = f"SET_HEATER_TEMPERATURE HEATER=extruder TARGET={temp}"
+                if self._send_moonraker_command('printer.gcode.script', {'script': script}):
                     logger.info(f"Set extruder temperature to {temp}°C")
                 else:
-                    logger.error(f"Failed to set extruder temperature: {response.text}")
+                    logger.error("Failed to set extruder temperature")
 
             if 'bed' in temp_data:
                 temp = temp_data['bed']
-                response = requests.post(
-                    f"{self.moonraker_url}/printer/gcode/script",
-                    json={"script": f"SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET={temp}"},
-                    timeout=10
-                )
-                if response.status_code == 200:
+                script = f"SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET={temp}"
+                if self._send_moonraker_command('printer.gcode.script', {'script': script}):
                     logger.info(f"Set bed temperature to {temp}°C")
                 else:
-                    logger.error(f"Failed to set bed temperature: {response.text}")
+                    logger.error("Failed to set bed temperature")
 
         except Exception as e:
             logger.error(f"Error executing temperature command: {e}")
