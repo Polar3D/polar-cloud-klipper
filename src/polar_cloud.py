@@ -566,6 +566,8 @@ class PolarCloudService:
         """Handle events from the Moonraker WebSocket connection."""
         if event == 'moonraker_ready':
             logger.info("Moonraker connection fully initialized")
+            # Register extension methods for frontend communication
+            self._register_extension_methods()
 
         elif event == 'status_update':
             # Real-time printer status updates - can be used to optimize polling
@@ -579,6 +581,200 @@ class PolarCloudService:
 
         elif event == 'klippy_disconnected':
             logger.warning("Klippy disconnected event received")
+
+    def _register_extension_methods(self):
+        """Register extension methods that frontends can call via Moonraker."""
+        if not self.moonraker_conn:
+            return
+
+        # Register each method with Moonraker
+        methods = [
+            ('polar_cloud_status', self._ext_handle_status),
+            ('polar_cloud_register', self._ext_handle_register),
+            ('polar_cloud_unregister', self._ext_handle_unregister),
+            ('polar_cloud_config', self._ext_handle_config),
+            ('polar_cloud_export_logs', self._ext_handle_export_logs),
+        ]
+
+        for method_name, handler in methods:
+            self.moonraker_conn.register_remote_method(method_name, handler)
+
+    def _ext_handle_status(self, params):
+        """Handle status request from frontend via extension method."""
+        try:
+            return {
+                "service_status": "active",
+                "connected": self.connected,
+                "authenticated": self.hello_sent,
+                "registered": bool(self.serial_number),
+                "serial_number": self.serial_number or "",
+                "username": self.config.get('polar_cloud', 'username', fallback=''),
+                "machine_type": self.config.get('polar_cloud', 'machine_type', fallback='Cartesian'),
+                "printer_type": self.config.get('polar_cloud', 'printer_type', fallback='Cartesian'),
+                "manufacturer": self.config.get('polar_cloud', 'manufacturer', fallback='kl'),
+                "last_update": "",
+                "webcam_enabled": self.config.get('polar_cloud', 'webcam_enabled', fallback='true').lower() == 'true',
+                "version_info": {
+                    "running_version": self.running_version,
+                    "latest_version": self.latest_version
+                },
+                "last_error": self.last_error,
+                "last_error_time": self.last_error_time
+            }
+        except Exception as e:
+            logger.error(f"Error handling status extension method: {e}")
+            return {"error": str(e)}
+
+    def _ext_handle_register(self, params):
+        """Handle registration request from frontend via extension method."""
+        try:
+            username = params.get('username', '')
+            pin = params.get('pin', '')
+            machine_type = params.get('machine_type', 'Cartesian')
+            printer_type = params.get('printer_type', 'Cartesian')
+            manufacturer = params.get('manufacturer', 'generic')
+
+            if not username or not pin:
+                return {"error": "Username and PIN are required"}
+
+            # Update config
+            if 'polar_cloud' not in self.config:
+                self.config['polar_cloud'] = {}
+            self.config['polar_cloud']['username'] = username
+            self.config['polar_cloud']['pin'] = pin
+            self.config['polar_cloud']['machine_type'] = machine_type
+            self.config['polar_cloud']['printer_type'] = printer_type
+            self.config['polar_cloud']['manufacturer'] = manufacturer
+            self.save_config()
+
+            # Trigger reconnection to register with new credentials
+            if self.sio.connected:
+                self.sio.disconnect()
+
+            return {"success": True, "message": "Registration initiated"}
+
+        except Exception as e:
+            logger.error(f"Error handling register extension method: {e}")
+            return {"error": str(e)}
+
+    def _ext_handle_unregister(self, params):
+        """Handle unregistration request from frontend via extension method."""
+        try:
+            # Clear registration data
+            if 'polar_cloud' not in self.config:
+                self.config['polar_cloud'] = {}
+            self.config['polar_cloud']['username'] = ''
+            self.config['polar_cloud']['pin'] = ''
+            self.config['polar_cloud']['serial_number'] = ''
+            self.save_config()
+
+            # Clear in-memory state
+            self.serial_number = None
+            self.hello_sent = False
+
+            # Disconnect
+            if self.sio.connected:
+                self.sio.disconnect()
+
+            return {"success": True, "message": "Unregistered successfully"}
+
+        except Exception as e:
+            logger.error(f"Error handling unregister extension method: {e}")
+            return {"error": str(e)}
+
+    def _ext_handle_config(self, params):
+        """Handle config get/set from frontend via extension method."""
+        try:
+            action = params.get('action', 'get')
+
+            if action == 'get':
+                return {
+                    "server_url": self.config.get('polar_cloud', 'server_url', fallback='https://printer4.polar3d.com'),
+                    "username": self.config.get('polar_cloud', 'username', fallback=''),
+                    "machine_type": self.config.get('polar_cloud', 'machine_type', fallback='Cartesian'),
+                    "printer_type": self.config.get('polar_cloud', 'printer_type', fallback='Cartesian'),
+                    "manufacturer": self.config.get('polar_cloud', 'manufacturer', fallback='kl'),
+                    "max_image_size": self.config.get('polar_cloud', 'max_image_size', fallback='150000'),
+                    "verbose": self.config.get('polar_cloud', 'verbose', fallback='false'),
+                    "serial_number": self.config.get('polar_cloud', 'serial_number', fallback='')
+                }
+            else:
+                # Update configuration
+                if 'polar_cloud' not in self.config:
+                    self.config['polar_cloud'] = {}
+
+                for key in ['server_url', 'machine_type', 'printer_type', 'manufacturer', 'max_image_size', 'verbose']:
+                    if key in params:
+                        self.config['polar_cloud'][key] = str(params[key])
+
+                self.save_config()
+                return {"success": True, "message": "Configuration updated"}
+
+        except Exception as e:
+            logger.error(f"Error handling config extension method: {e}")
+            return {"error": str(e)}
+
+    def _ext_handle_export_logs(self, params):
+        """Handle log export request from frontend via extension method."""
+        try:
+            import datetime
+            import socket as sock
+
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            hostname = sock.gethostname()
+
+            logs = []
+            logs.append("=" * 60)
+            logs.append("POLAR CLOUD DIAGNOSTIC LOGS")
+            logs.append(f"Generated: {datetime.datetime.now().isoformat()}")
+            logs.append(f"Hostname: {hostname}")
+            logs.append("=" * 60)
+            logs.append("")
+
+            # Service status
+            logs.append("=== SERVICE STATUS ===")
+            logs.append(f"Connected to Polar Cloud: {self.connected}")
+            logs.append(f"Authenticated: {self.hello_sent}")
+            logs.append(f"Serial Number: {self.serial_number or 'Not registered'}")
+            logs.append(f"Running Version: {self.running_version}")
+            logs.append("")
+
+            # Configuration
+            logs.append("=== CONFIGURATION ===")
+            logs.append(f"Server URL: {self.config.get('polar_cloud', 'server_url', fallback='')}")
+            logs.append(f"Username: {self.config.get('polar_cloud', 'username', fallback='')}")
+            logs.append(f"Machine Type: {self.config.get('polar_cloud', 'machine_type', fallback='')}")
+            logs.append("")
+
+            # Recent log entries
+            logs.append("=== RECENT LOG ENTRIES ===")
+            log_file = os.path.join(PRINTER_DATA_PATH, 'logs/polar_cloud.log')
+            try:
+                if os.path.exists(log_file):
+                    with open(log_file, 'r') as f:
+                        lines = f.readlines()
+                        for line in lines[-100:]:
+                            logs.append(line.rstrip())
+            except Exception as e:
+                logs.append(f"Error reading log file: {e}")
+
+            logs.append("")
+            logs.append("=" * 60)
+            logs.append("END OF DIAGNOSTIC LOGS")
+            logs.append("=" * 60)
+
+            log_content = '\n'.join(logs)
+            filename = f"polar_cloud_logs_{hostname}_{timestamp}.txt"
+
+            return {
+                'logs': log_content,
+                'filename': filename,
+                'content_type': 'text/plain'
+            }
+
+        except Exception as e:
+            logger.error(f"Error handling export_logs extension method: {e}")
+            return {"error": str(e)}
 
     def setup_socketio_handlers(self):
         """Set up Socket.IO event handlers"""
