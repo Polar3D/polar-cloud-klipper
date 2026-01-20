@@ -177,6 +177,10 @@ class PolarCloudService:
         self.last_error = None
         self.last_error_time = None
 
+        # Auto-reset tracking for stuck cancelled/complete states
+        self._stuck_state_detected_time = None
+        self._stuck_state_timeout = 10  # seconds before auto-reset
+
         # Status loop thread
         self._status_thread = None
         self._status_thread_running = False
@@ -1641,6 +1645,20 @@ class PolarCloudService:
             # Log when we have a cloud job in a terminal state
             if printer_status in [self.PSTATE_COMPLETE, self.PSTATE_POSTPROCESSING, self.PSTATE_ERROR, self.PSTATE_CANCELLING]:
                 logger.info(f"Terminal state detected: status={printer_status}, is_cloud={self.is_printing_cloud_job}, job_id={self.current_job_id}")
+
+            # Auto-reset for LOCAL jobs stuck in cancelled/complete state
+            # This handles jobs cancelled from touchscreen or other non-cloud sources
+            if not self.is_printing_cloud_job and printer_status == self.PSTATE_CANCELLING:
+                if self._stuck_state_detected_time is None:
+                    self._stuck_state_detected_time = time.time()
+                    logger.debug("Detected cancelled state for local job, starting timeout")
+                elif time.time() - self._stuck_state_detected_time > self._stuck_state_timeout:
+                    logger.info("Auto-resetting stuck cancelled state from local job")
+                    self.reset_print_state()
+                    self._stuck_state_detected_time = None
+            elif printer_status not in [self.PSTATE_CANCELLING]:
+                # Clear the timer if we're no longer in cancelled state
+                self._stuck_state_detected_time = None
 
             if self.is_printing_cloud_job and self.current_job_id:
                 job_progress = self.get_job_progress()
