@@ -277,16 +277,19 @@ install_venv() {
 
     "$VENV_DIR/bin/pip" install --no-cache-dir 'configparser>=5.0' 2>&1 || true
 
-    # Pillow - try binary only, fall back to ffmpeg for image compression
-    "$VENV_DIR/bin/pip" install --no-cache-dir --only-binary=:all: 'Pillow>=8.0' 2>&1 || {
-        if python3 -c "import PIL" 2>/dev/null; then
-            print_success "Using system Pillow"
-        elif which ffmpeg >/dev/null 2>&1; then
-            print_warning "Pillow not available - using ffmpeg for image compression"
+    # Pillow - ONLY use pre-built wheels, never build from source on K1
+    # The K1 doesn't have the build tools needed and source builds take forever
+    if python3 -c "import PIL" 2>/dev/null; then
+        print_success "Using system Pillow"
+    else
+        # Try to install a wheel only - no source builds allowed
+        if "$VENV_DIR/bin/pip" install --no-cache-dir --only-binary :all: 'Pillow>=8.0,<11.0' 2>&1; then
+            print_success "Installed Pillow from wheel"
         else
-            print_warning "Pillow not available - webcam features may be limited"
+            print_warning "No Pillow wheel available for this platform"
+            print_info "Webcam snapshots will use ffmpeg fallback (already supported)"
         fi
-    }
+    fi
 
     # Cryptography - this is the tricky one on K1
     if [ "$HAS_SYSTEM_CRYPTO" = "1" ]; then
@@ -329,13 +332,13 @@ install_venv() {
 install_files() {
     print_info "Installing Polar Cloud files..."
 
-    # Copy Moonraker plugin
-    if [ -d "$MOONRAKER_COMPONENTS" ]; then
-        cp "$INSTALL_DIR/src/polar_cloud_moonraker.py" "$MOONRAKER_COMPONENTS/polar_cloud.py"
-        print_success "Installed Moonraker plugin"
-    else
-        print_error "Moonraker components directory not found: $MOONRAKER_COMPONENTS"
-        exit 1
+    # Note: Moonraker plugin is no longer needed - the service now connects
+    # to Moonraker via WebSocket as an external agent
+
+    # Clean up old Moonraker plugin if it exists (from previous installations)
+    if [ -d "$MOONRAKER_COMPONENTS" ] && [ -f "$MOONRAKER_COMPONENTS/polar_cloud.py" ]; then
+        rm -f "$MOONRAKER_COMPONENTS/polar_cloud.py"
+        print_info "Removed legacy Moonraker plugin"
     fi
 
     # Copy web interface
@@ -452,18 +455,16 @@ configure_moonraker() {
 
     if [ ! -f "$moonraker_conf" ]; then
         print_warning "moonraker.conf not found at $moonraker_conf"
-        print_info "You may need to manually add [polar_cloud] section"
         return
     fi
 
-    # Add Polar Cloud plugin section if it doesn't exist
-    if ! grep -q "\[polar_cloud\]" "$moonraker_conf"; then
-        echo "" >> "$moonraker_conf"
-        echo "[polar_cloud]" >> "$moonraker_conf"
-        echo "# Polar Cloud plugin configuration" >> "$moonraker_conf"
-        print_success "Added Polar Cloud plugin to moonraker.conf"
-    else
-        print_info "Polar Cloud plugin already configured in moonraker.conf"
+    # Remove old [polar_cloud] plugin section if it exists (no longer needed)
+    # The service now connects via WebSocket as an external agent
+    if grep -q "^\[polar_cloud\]$" "$moonraker_conf"; then
+        # Remove the [polar_cloud] section and its comment line
+        sed -i '/^\[polar_cloud\]$/,/^$/d' "$moonraker_conf"
+        sed -i '/# Polar Cloud plugin configuration/d' "$moonraker_conf"
+        print_info "Removed legacy [polar_cloud] plugin section"
     fi
 
     # Add update manager section if it doesn't exist
@@ -605,7 +606,7 @@ configure_nginx() {
 start_services() {
     print_info "Starting services..."
 
-    # Restart Moonraker to load plugin
+    # Restart Moonraker to pick up any configuration changes
     print_info "Restarting Moonraker..."
 
     # Try multiple methods to restart Moonraker on K1

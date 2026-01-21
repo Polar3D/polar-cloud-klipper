@@ -25,7 +25,7 @@ This integration connects your Klipper-based 3D printer to the Polar Cloud servi
 
 - **Socket.IO Integration** - Real-time communication with Polar Cloud servers
 - **Web Interface** - Standalone configuration UI at `/polar-cloud/`
-- **Moonraker Plugin** - REST API integration for web interfaces
+- **Moonraker WebSocket Agent** - Non-blocking integration with Moonraker via WebSocket
 - **Automatic Registration** - Seamless printer registration with Polar Cloud
 - **Status Monitoring** - Real-time connection and authentication status
 - **Security** - RSA key-based authentication and secure communication
@@ -118,14 +118,16 @@ After installation, you may need to manually add nginx configuration. The instal
 
 ### API Integration
 
-The Moonraker plugin provides REST API endpoints:
+The service registers as a Moonraker agent and provides JSON-RPC methods:
 
 ```bash
-# Get status
-GET /printer/polar_cloud/status
+# Get status (via JSON-RPC)
+POST /printer/jsonrpc
+{"jsonrpc": "2.0", "method": "polar_cloud_status", "id": 1}
 
-# Update configuration  
-POST /printer/polar_cloud/config
+# Update configuration (via JSON-RPC)
+POST /printer/jsonrpc
+{"jsonrpc": "2.0", "method": "polar_cloud_config", "params": {...}, "id": 1}
 ```
 
 ### Service Management
@@ -281,7 +283,7 @@ To remove the Polar Cloud integration:
 This will:
 - Stop and remove the systemd service
 - Remove all Polar Cloud files
-- Remove the Moonraker plugin
+- Remove Moonraker configuration entries
 - Optionally remove configuration (preserves credentials by default)
 
 ## Development
@@ -297,8 +299,7 @@ polar-cloud-klipper/
 ├── uninstall_k1.sh         # K1 series removal script
 ├── requirements.txt        # Python dependencies
 ├── src/                    # Source files
-│   ├── polar_cloud.py     # Main service
-│   ├── polar_cloud_moonraker.py  # Moonraker plugin
+│   ├── polar_cloud.py     # Main service (includes Moonraker WebSocket agent)
 │   └── polar_cloud_web.html      # Web interface
 ├── config/                 # Configuration templates
 │   ├── polar_cloud.service.template

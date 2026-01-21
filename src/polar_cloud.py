@@ -41,6 +41,18 @@ except ImportError:
 # Import socketio - use sync client for universal compatibility
 import socketio
 
+# Import websocket for Moonraker agent connection
+try:
+    import websocket
+    HAS_WEBSOCKET = True
+except ImportError:
+    HAS_WEBSOCKET = False
+    print("WARNING: websocket-client not available - will use HTTP fallback for Moonraker")
+
+import queue
+from collections import OrderedDict
+from random import randrange
+
 # Optional PIL import for image processing
 try:
     from PIL import Image
@@ -95,6 +107,332 @@ if not logger.handlers:
 
     # Note: We don't add a StreamHandler because the service script already
     # redirects stdout to the log file, which would cause duplicate entries
+
+
+class MoonrakerConnection:
+    """WebSocket connection to Moonraker as an agent.
+
+    This replaces HTTP polling with a persistent WebSocket connection,
+    allowing real-time updates and agent identification.
+    """
+
+    def __init__(self, moonraker_url="http://localhost:7125", on_event=None, version="1.0.0"):
+        self.moonraker_url = moonraker_url
+        self.ws_url = moonraker_url.replace('http://', 'ws://').replace('https://', 'wss://') + '/websocket'
+        self.on_event = on_event or (lambda event, data: None)
+        self.version = version
+
+        self.ws = None
+        self.ws_thread = None
+        self.message_queue = queue.Queue(maxsize=32)
+        self.request_callbacks = OrderedDict()
+        self.request_callbacks_lock = threading.RLock()
+        self.remote_method_handlers = {}
+
+        self.connected = False
+        self.klippy_ready = threading.Event()
+        self.shutdown = False
+        self.reconnect_delay = 1
+        self.max_reconnect_delay = 30
+
+        # Cached printer state from subscriptions
+        self.printer_state = {}
+        self.printer_state_lock = threading.RLock()
+
+    def start(self):
+        """Start the WebSocket connection in a background thread."""
+        if not HAS_WEBSOCKET:
+            logger.warning("websocket-client not available, cannot start MoonrakerConnection")
+            return False
+
+        self.shutdown = False
+        self.ws_thread = threading.Thread(target=self._connection_loop, daemon=True)
+        self.ws_thread.start()
+        return True
+
+    def stop(self):
+        """Stop the WebSocket connection."""
+        self.shutdown = True
+        self.klippy_ready.clear()
+        if self.ws:
+            try:
+                self.ws.close()
+            except Exception:
+                pass
+        if self.ws_thread:
+            self.ws_thread.join(timeout=5)
+
+    def _connection_loop(self):
+        """Main connection loop with automatic reconnection."""
+        while not self.shutdown:
+            try:
+                self._connect()
+            except Exception as e:
+                logger.error(f"Moonraker WebSocket error: {e}")
+
+            if not self.shutdown:
+                logger.info(f"Reconnecting to Moonraker in {self.reconnect_delay}s...")
+                time.sleep(self.reconnect_delay)
+                self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
+
+    def _connect(self):
+        """Establish WebSocket connection to Moonraker."""
+        logger.info(f"Connecting to Moonraker WebSocket at {self.ws_url}")
+
+        self.ws = websocket.WebSocketApp(
+            self.ws_url,
+            on_open=self._on_open,
+            on_message=self._on_message,
+            on_error=self._on_error,
+            on_close=self._on_close
+        )
+
+        # Run WebSocket (blocks until closed)
+        self.ws.run_forever()
+
+    def _on_open(self, ws):
+        """Handle WebSocket connection opened."""
+        logger.info("Moonraker WebSocket connected")
+        self.connected = True
+        self.reconnect_delay = 1  # Reset reconnect delay on successful connection
+
+        # Start message sender thread
+        threading.Thread(target=self._message_sender_loop, daemon=True).start()
+
+        # Wait for Klippy to be ready, then identify as agent
+        threading.Thread(target=self._initialize_connection, daemon=True).start()
+
+    def _on_message(self, ws, message):
+        """Handle incoming WebSocket message."""
+        try:
+            data = json.loads(message)
+
+            # Handle JSON-RPC response (has 'id' field)
+            if 'id' in data:
+                callback = None
+                with self.request_callbacks_lock:
+                    req_id = data['id']
+                    if req_id in self.request_callbacks:
+                        callback = self.request_callbacks.pop(req_id)
+
+                if callback:
+                    try:
+                        callback(data)
+                    except Exception as e:
+                        logger.error(f"Error in request callback: {e}")
+                return
+
+            # Handle JSON-RPC notification (has 'method' field, no 'id')
+            method = data.get('method', '')
+            params = data.get('params', {})
+
+            # Handle Moonraker notifications
+            if method == 'notify_klippy_ready':
+                logger.info("Klippy is ready")
+                self.klippy_ready.set()
+                self.on_event('klippy_ready', {})
+
+            elif method == 'notify_klippy_shutdown':
+                logger.warning("Klippy has shut down")
+                self.klippy_ready.clear()
+                self.on_event('klippy_shutdown', {})
+
+            elif method == 'notify_klippy_disconnected':
+                logger.warning("Klippy disconnected")
+                self.klippy_ready.clear()
+                self.on_event('klippy_disconnected', {})
+
+            elif method == 'notify_status_update':
+                # Real-time printer status updates
+                if params:
+                    status = params[0] if isinstance(params, list) else params
+                    with self.printer_state_lock:
+                        self._merge_status(status)
+                    self.on_event('status_update', status)
+
+            elif method in self.remote_method_handlers:
+                # Handle registered remote method calls
+                handler = self.remote_method_handlers[method]
+                try:
+                    result = handler(params)
+                    # Remote methods don't expect responses
+                except Exception as e:
+                    logger.error(f"Error in remote method handler {method}: {e}")
+
+            else:
+                # Pass unhandled notifications to event handler
+                self.on_event('notification', {'method': method, 'params': params})
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON from Moonraker: {e}")
+        except Exception as e:
+            logger.error(f"Error handling Moonraker message: {e}")
+
+    def _on_error(self, ws, error):
+        """Handle WebSocket error."""
+        logger.error(f"Moonraker WebSocket error: {error}")
+        self.connected = False
+
+    def _on_close(self, ws, close_status_code, close_msg):
+        """Handle WebSocket connection closed."""
+        logger.warning(f"Moonraker WebSocket closed: {close_status_code} - {close_msg}")
+        self.connected = False
+        self.klippy_ready.clear()
+
+    def _message_sender_loop(self):
+        """Send queued messages to Moonraker."""
+        while self.connected and not self.shutdown:
+            try:
+                message = self.message_queue.get(timeout=1)
+                if self.ws and self.connected:
+                    self.ws.send(json.dumps(message))
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Error sending message to Moonraker: {e}")
+
+    def _initialize_connection(self):
+        """Initialize connection after WebSocket is open."""
+        # First check if Klippy is already ready
+        def on_server_info(data):
+            result = data.get('result', {})
+            klippy_state = result.get('klippy_state', 'disconnected')
+            if klippy_state == 'ready':
+                logger.info("Klippy already ready")
+                self.klippy_ready.set()
+            else:
+                logger.info(f"Klippy state: {klippy_state}, waiting for ready...")
+
+        self.send_request('server.info', callback=on_server_info)
+
+        # Wait for Klippy to be ready
+        if not self.klippy_ready.wait(timeout=60):
+            logger.warning("Timeout waiting for Klippy ready")
+            return
+
+        # Identify as an agent
+        self._identify_as_agent()
+
+        # Subscribe to printer objects for real-time updates
+        self._subscribe_to_printer_objects()
+
+        # Notify that we're fully initialized
+        self.on_event('moonraker_ready', {})
+
+    def _identify_as_agent(self):
+        """Identify this connection as a Polar Cloud agent."""
+        params = {
+            'client_name': 'polar_cloud',
+            'version': self.version,
+            'type': 'agent',
+            'url': 'https://github.com/vanmorris/polar-cloud-klipper'
+        }
+
+        def on_identify(data):
+            if 'error' in data:
+                logger.error(f"Agent identification failed: {data['error']}")
+            else:
+                logger.info("Identified as Polar Cloud agent")
+
+        self.send_request('server.connection.identify', params=params, callback=on_identify)
+
+    def _subscribe_to_printer_objects(self):
+        """Subscribe to printer objects for real-time status updates."""
+        objects = {
+            'print_stats': None,
+            'heater_bed': None,
+            'extruder': None,
+            'toolhead': None,
+            'virtual_sdcard': None,
+            'webhooks': None,
+        }
+
+        def on_subscribe(data):
+            if 'error' in data:
+                logger.error(f"Subscription failed: {data['error']}")
+            else:
+                # Store initial state
+                result = data.get('result', {}).get('status', {})
+                with self.printer_state_lock:
+                    self._merge_status(result)
+                logger.info("Subscribed to printer objects")
+
+        self.send_request('printer.objects.subscribe', params={'objects': objects}, callback=on_subscribe)
+
+    def _merge_status(self, status):
+        """Merge status update into cached printer state."""
+        for key, value in status.items():
+            if key not in self.printer_state:
+                self.printer_state[key] = {}
+            if isinstance(value, dict):
+                self.printer_state[key].update(value)
+            else:
+                self.printer_state[key] = value
+
+    def send_request(self, method, params=None, callback=None):
+        """Send a JSON-RPC request to Moonraker."""
+        req_id = randrange(100000)
+        request = {
+            'jsonrpc': '2.0',
+            'method': method,
+            'id': req_id
+        }
+        if params:
+            request['params'] = params
+
+        if callback:
+            with self.request_callbacks_lock:
+                # Limit callback queue size
+                if len(self.request_callbacks) > 100:
+                    self.request_callbacks.popitem(last=False)
+                self.request_callbacks[req_id] = callback
+
+        try:
+            self.message_queue.put_nowait(request)
+        except queue.Full:
+            logger.warning("Moonraker message queue full")
+            if callback:
+                with self.request_callbacks_lock:
+                    self.request_callbacks.pop(req_id, None)
+
+    def send_request_sync(self, method, params=None, timeout=5):
+        """Send a JSON-RPC request and wait for response synchronously."""
+        result = {'response': None, 'event': threading.Event()}
+
+        def on_response(data):
+            result['response'] = data
+            result['event'].set()
+
+        self.send_request(method, params, callback=on_response)
+
+        if result['event'].wait(timeout=timeout):
+            return result['response']
+        else:
+            logger.warning(f"Timeout waiting for response to {method}")
+            return None
+
+    def get_printer_state(self):
+        """Get cached printer state."""
+        with self.printer_state_lock:
+            return self.printer_state.copy()
+
+    def register_remote_method(self, method_name, handler):
+        """Register a handler for remote method calls."""
+        self.remote_method_handlers[method_name] = handler
+
+        # Also register with Moonraker
+        def on_register(data):
+            if 'error' in data:
+                logger.error(f"Failed to register remote method {method_name}: {data['error']}")
+            else:
+                logger.info(f"Registered remote method: {method_name}")
+
+        self.send_request(
+            'connection.register_remote_method',
+            params={'method_name': method_name},
+            callback=on_register
+        )
+
 
 class PolarCloudService:
     # Polar Cloud status constants (as integers)
@@ -178,9 +516,17 @@ class PolarCloudService:
         self.last_error = None
         self.last_error_time = None
 
+        # Auto-reset tracking for stuck cancelled/complete states
+        self._stuck_state_detected_time = None
+        self._stuck_state_timeout = 10  # seconds before auto-reset
+
         # Status loop thread
         self._status_thread = None
         self._status_thread_running = False
+
+        # Moonraker WebSocket connection (replaces HTTP polling)
+        self.moonraker_conn = None
+        self._use_websocket = HAS_WEBSOCKET  # Can be disabled for fallback
 
         # Load configuration
         self.load_config()
@@ -193,6 +539,263 @@ class PolarCloudService:
 
         # Set up Socket.IO event handlers
         self.setup_socketio_handlers()
+
+        # Initialize Moonraker WebSocket connection
+        self._init_moonraker_connection()
+
+    def _init_moonraker_connection(self):
+        """Initialize the Moonraker WebSocket connection."""
+        if not self._use_websocket:
+            logger.info("WebSocket disabled, using HTTP fallback for Moonraker")
+            return
+
+        self.moonraker_conn = MoonrakerConnection(
+            moonraker_url=self.moonraker_url,
+            on_event=self._handle_moonraker_event,
+            version=self.running_version
+        )
+
+        # Start the connection
+        if self.moonraker_conn.start():
+            logger.info("Moonraker WebSocket connection started")
+        else:
+            logger.warning("Failed to start Moonraker WebSocket, using HTTP fallback")
+            self._use_websocket = False
+            self.moonraker_conn = None
+
+    def _handle_moonraker_event(self, event, data):
+        """Handle events from the Moonraker WebSocket connection."""
+        if event == 'moonraker_ready':
+            logger.info("Moonraker connection fully initialized")
+            # Register extension methods for frontend communication
+            self._register_extension_methods()
+
+        elif event == 'status_update':
+            # Real-time printer status updates - can be used to optimize polling
+            pass
+
+        elif event == 'klippy_ready':
+            logger.info("Klippy ready event received")
+
+        elif event == 'klippy_shutdown':
+            logger.warning("Klippy shutdown event received")
+
+        elif event == 'klippy_disconnected':
+            logger.warning("Klippy disconnected event received")
+
+    def _register_extension_methods(self):
+        """Register extension methods that frontends can call via Moonraker."""
+        if not self.moonraker_conn:
+            return
+
+        # Register each method with Moonraker
+        methods = [
+            ('polar_cloud_status', self._ext_handle_status),
+            ('polar_cloud_register', self._ext_handle_register),
+            ('polar_cloud_unregister', self._ext_handle_unregister),
+            ('polar_cloud_config', self._ext_handle_config),
+            ('polar_cloud_export_logs', self._ext_handle_export_logs),
+            ('polar_cloud_update', self._ext_handle_update),
+        ]
+
+        for method_name, handler in methods:
+            self.moonraker_conn.register_remote_method(method_name, handler)
+
+    def _ext_handle_status(self, params):
+        """Handle status request from frontend via extension method."""
+        try:
+            return {
+                "service_status": "active",
+                "connected": self.connected,
+                "authenticated": self.hello_sent,
+                "registered": bool(self.serial_number),
+                "serial_number": self.serial_number or "",
+                "username": self.config.get('polar_cloud', 'username', fallback=''),
+                "machine_type": self.config.get('polar_cloud', 'machine_type', fallback='Cartesian'),
+                "printer_type": self.config.get('polar_cloud', 'printer_type', fallback='Cartesian'),
+                "manufacturer": self.config.get('polar_cloud', 'manufacturer', fallback='kl'),
+                "last_update": "",
+                "webcam_enabled": self.config.get('polar_cloud', 'webcam_enabled', fallback='true').lower() == 'true',
+                "version_info": {
+                    "running_version": self.running_version,
+                    "latest_version": self.latest_version
+                },
+                "last_error": self.last_error,
+                "last_error_time": self.last_error_time
+            }
+        except Exception as e:
+            logger.error(f"Error handling status extension method: {e}")
+            return {"error": str(e)}
+
+    def _ext_handle_register(self, params):
+        """Handle registration request from frontend via extension method."""
+        try:
+            username = params.get('username', '')
+            pin = params.get('pin', '')
+            machine_type = params.get('machine_type', 'Cartesian')
+            printer_type = params.get('printer_type', 'Cartesian')
+            manufacturer = params.get('manufacturer', 'generic')
+
+            if not username or not pin:
+                return {"error": "Username and PIN are required"}
+
+            # Update config
+            if 'polar_cloud' not in self.config:
+                self.config['polar_cloud'] = {}
+            self.config['polar_cloud']['username'] = username
+            self.config['polar_cloud']['pin'] = pin
+            self.config['polar_cloud']['machine_type'] = machine_type
+            self.config['polar_cloud']['printer_type'] = printer_type
+            self.config['polar_cloud']['manufacturer'] = manufacturer
+            self.save_config()
+
+            # Trigger reconnection to register with new credentials
+            if self.sio.connected:
+                self.sio.disconnect()
+
+            return {"success": True, "message": "Registration initiated"}
+
+        except Exception as e:
+            logger.error(f"Error handling register extension method: {e}")
+            return {"error": str(e)}
+
+    def _ext_handle_unregister(self, params):
+        """Handle unregistration request from frontend via extension method."""
+        try:
+            # Clear registration data
+            if 'polar_cloud' not in self.config:
+                self.config['polar_cloud'] = {}
+            self.config['polar_cloud']['username'] = ''
+            self.config['polar_cloud']['pin'] = ''
+            self.config['polar_cloud']['serial_number'] = ''
+            self.save_config()
+
+            # Clear in-memory state
+            self.serial_number = None
+            self.hello_sent = False
+
+            # Disconnect
+            if self.sio.connected:
+                self.sio.disconnect()
+
+            return {"success": True, "message": "Unregistered successfully"}
+
+        except Exception as e:
+            logger.error(f"Error handling unregister extension method: {e}")
+            return {"error": str(e)}
+
+    def _ext_handle_config(self, params):
+        """Handle config get/set from frontend via extension method."""
+        try:
+            action = params.get('action', 'get')
+
+            if action == 'get':
+                return {
+                    "server_url": self.config.get('polar_cloud', 'server_url', fallback='https://printer4.polar3d.com'),
+                    "username": self.config.get('polar_cloud', 'username', fallback=''),
+                    "machine_type": self.config.get('polar_cloud', 'machine_type', fallback='Cartesian'),
+                    "printer_type": self.config.get('polar_cloud', 'printer_type', fallback='Cartesian'),
+                    "manufacturer": self.config.get('polar_cloud', 'manufacturer', fallback='kl'),
+                    "max_image_size": self.config.get('polar_cloud', 'max_image_size', fallback='150000'),
+                    "verbose": self.config.get('polar_cloud', 'verbose', fallback='false'),
+                    "serial_number": self.config.get('polar_cloud', 'serial_number', fallback='')
+                }
+            else:
+                # Update configuration
+                if 'polar_cloud' not in self.config:
+                    self.config['polar_cloud'] = {}
+
+                for key in ['server_url', 'machine_type', 'printer_type', 'manufacturer', 'max_image_size', 'verbose']:
+                    if key in params:
+                        self.config['polar_cloud'][key] = str(params[key])
+
+                self.save_config()
+                return {"success": True, "message": "Configuration updated"}
+
+        except Exception as e:
+            logger.error(f"Error handling config extension method: {e}")
+            return {"error": str(e)}
+
+    def _ext_handle_export_logs(self, params):
+        """Handle log export request from frontend via extension method."""
+        try:
+            import datetime
+            import socket as sock
+
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            hostname = sock.gethostname()
+
+            logs = []
+            logs.append("=" * 60)
+            logs.append("POLAR CLOUD DIAGNOSTIC LOGS")
+            logs.append(f"Generated: {datetime.datetime.now().isoformat()}")
+            logs.append(f"Hostname: {hostname}")
+            logs.append("=" * 60)
+            logs.append("")
+
+            # Service status
+            logs.append("=== SERVICE STATUS ===")
+            logs.append(f"Connected to Polar Cloud: {self.connected}")
+            logs.append(f"Authenticated: {self.hello_sent}")
+            logs.append(f"Serial Number: {self.serial_number or 'Not registered'}")
+            logs.append(f"Running Version: {self.running_version}")
+            logs.append("")
+
+            # Configuration
+            logs.append("=== CONFIGURATION ===")
+            logs.append(f"Server URL: {self.config.get('polar_cloud', 'server_url', fallback='')}")
+            logs.append(f"Username: {self.config.get('polar_cloud', 'username', fallback='')}")
+            logs.append(f"Machine Type: {self.config.get('polar_cloud', 'machine_type', fallback='')}")
+            logs.append("")
+
+            # Recent log entries
+            logs.append("=== RECENT LOG ENTRIES ===")
+            log_file = os.path.join(PRINTER_DATA_PATH, 'logs/polar_cloud.log')
+            try:
+                if os.path.exists(log_file):
+                    with open(log_file, 'r') as f:
+                        lines = f.readlines()
+                        for line in lines[-100:]:
+                            logs.append(line.rstrip())
+            except Exception as e:
+                logs.append(f"Error reading log file: {e}")
+
+            logs.append("")
+            logs.append("=" * 60)
+            logs.append("END OF DIAGNOSTIC LOGS")
+            logs.append("=" * 60)
+
+            log_content = '\n'.join(logs)
+            filename = f"polar_cloud_logs_{hostname}_{timestamp}.txt"
+
+            return {
+                'logs': log_content,
+                'filename': filename,
+                'content_type': 'text/plain'
+            }
+
+        except Exception as e:
+            logger.error(f"Error handling export_logs extension method: {e}")
+            return {"error": str(e)}
+
+    def _ext_handle_update(self, params):
+        """Handle update request from frontend via extension method."""
+        try:
+            # Trigger the existing update command
+            # Run in background thread to not block the response
+            import threading
+
+            def do_update():
+                self.execute_update_command()
+
+            update_thread = threading.Thread(target=do_update, daemon=True)
+            update_thread.start()
+
+            return {"success": True, "message": "Update initiated"}
+
+        except Exception as e:
+            logger.error(f"Error handling update extension method: {e}")
+            return {"error": str(e)}
 
     def setup_socketio_handlers(self):
         """Set up Socket.IO event handlers"""
@@ -737,13 +1340,58 @@ class PolarCloudService:
             logger.error(f"Error sending version info: {e}")
 
     def get_moonraker_data(self, endpoint):
-        """Get data from Moonraker API"""
+        """Get data from Moonraker API.
+
+        Uses WebSocket cached data when available, falls back to HTTP.
+        """
+        # Try to use cached WebSocket data for common queries
+        if self.moonraker_conn and self.moonraker_conn.connected:
+            cached = self._get_cached_moonraker_data(endpoint)
+            if cached is not None:
+                return cached
+
+        # Fall back to HTTP
         try:
             response = requests.get(f"{self.moonraker_url}/{endpoint}", timeout=5)
             if response.status_code == 200:
                 return response.json()
         except Exception as e:
             logger.error(f"Error getting Moonraker data from {endpoint}: {e}")
+        return None
+
+    def _get_cached_moonraker_data(self, endpoint):
+        """Get data from WebSocket cache if available."""
+        state = self.moonraker_conn.get_printer_state()
+        if not state:
+            return None
+
+        # Map common endpoints to cached data
+        # Format: printer/objects/query?object1&object2
+        if endpoint.startswith("printer/objects/query?"):
+            query_part = endpoint.split("?", 1)[1]
+            objects = query_part.split("&")
+
+            result_status = {}
+            for obj in objects:
+                # Handle objects like "heater_bed" or with sub-keys
+                obj_name = obj.split("=")[0] if "=" in obj else obj
+                if obj_name in state:
+                    result_status[obj_name] = state[obj_name]
+
+            if result_status:
+                return {'result': {'status': result_status}}
+
+        elif endpoint == "printer/info":
+            # For printer/info, we need webhooks state
+            if 'webhooks' in state:
+                webhooks = state['webhooks']
+                return {
+                    'result': {
+                        'state': webhooks.get('state', 'ready'),
+                        'state_message': webhooks.get('state_message', '')
+                    }
+                }
+
         return None
 
     def get_job_progress(self):
@@ -1586,6 +2234,10 @@ class PolarCloudService:
         self.running = False
         self.stop_status_loop()
 
+        # Stop Moonraker WebSocket connection
+        if self.moonraker_conn:
+            self.moonraker_conn.stop()
+
     def send_job_completion(self, job_id, state, print_seconds=0, filament_used=0, bytes_read=0, file_size=0):
         """Send job completion notification to Polar Cloud"""
         try:
@@ -1626,16 +2278,11 @@ class PolarCloudService:
         """
         try:
             logger.info("Resetting print state with SDCARD_RESET_FILE")
-            response = requests.post(
-                f"{self.moonraker_url}/printer/gcode/script",
-                json={"script": "SDCARD_RESET_FILE"},
-                timeout=10
-            )
-            if response.status_code == 200:
+            if self._send_moonraker_command('printer.gcode.script', {'script': 'SDCARD_RESET_FILE'}):
                 logger.info("Print state reset successfully")
                 return True
             else:
-                logger.warning(f"Failed to reset print state: {response.status_code}")
+                logger.warning("Failed to reset print state")
                 return False
         except Exception as e:
             logger.error(f"Error resetting print state: {e}")
@@ -1650,6 +2297,20 @@ class PolarCloudService:
             # Log when we have a cloud job in a terminal state
             if printer_status in [self.PSTATE_COMPLETE, self.PSTATE_POSTPROCESSING, self.PSTATE_ERROR, self.PSTATE_CANCELLING]:
                 logger.info(f"Terminal state detected: status={printer_status}, is_cloud={self.is_printing_cloud_job}, job_id={self.current_job_id}")
+
+            # Auto-reset for LOCAL jobs stuck in cancelled/complete state
+            # This handles jobs cancelled from touchscreen or other non-cloud sources
+            if not self.is_printing_cloud_job and printer_status == self.PSTATE_CANCELLING:
+                if self._stuck_state_detected_time is None:
+                    self._stuck_state_detected_time = time.time()
+                    logger.debug("Detected cancelled state for local job, starting timeout")
+                elif time.time() - self._stuck_state_detected_time > self._stuck_state_timeout:
+                    logger.info("Auto-resetting stuck cancelled state from local job")
+                    self.reset_print_state()
+                    self._stuck_state_detected_time = None
+            elif printer_status not in [self.PSTATE_CANCELLING]:
+                # Clear the timer if we're no longer in cancelled state
+                self._stuck_state_detected_time = None
 
             if self.is_printing_cloud_job and self.current_job_id:
                 job_progress = self.get_job_progress()
@@ -1767,20 +2428,14 @@ class PolarCloudService:
 
                     logger.info(f"Downloaded gcode file to {filepath}")
 
-                    print_response = requests.post(
-                        f"{self.moonraker_url}/printer/print/start",
-                        json={"filename": filename},
-                        timeout=10
-                    )
-
-                    if print_response.status_code == 200:
+                    if self._send_moonraker_command('printer.print.start', {'filename': filename}):
                         self.is_printing_cloud_job = True
                         self.current_job_id = job_id
                         self.job_is_preparing = False
                         self.job_start_time = time.time()
                         logger.info(f"Started printing cloud job {job_id}")
                     else:
-                        logger.error(f"Failed to start print: {print_response.text}")
+                        logger.error("Failed to start print")
                 else:
                     logger.error(f"Failed to download gcode file: {response.status_code}")
 
@@ -1792,14 +2447,52 @@ class PolarCloudService:
         except Exception as e:
             logger.error(f"Error executing print command: {e}")
 
+    def _send_moonraker_command(self, method, params=None, timeout=10):
+        """Send a command to Moonraker via WebSocket or HTTP fallback.
+
+        Returns True on success, False on failure.
+        """
+        # Try WebSocket first
+        if self.moonraker_conn and self.moonraker_conn.connected:
+            response = self.moonraker_conn.send_request_sync(method, params, timeout=timeout)
+            if response is not None:
+                if 'error' in response:
+                    logger.error(f"Moonraker command {method} failed: {response['error']}")
+                    return False
+                return True
+
+        # Fall back to HTTP
+        # Map JSON-RPC methods to HTTP endpoints
+        http_map = {
+            'printer.print.cancel': ('POST', '/printer/print/cancel'),
+            'printer.print.pause': ('POST', '/printer/print/pause'),
+            'printer.print.resume': ('POST', '/printer/print/resume'),
+            'printer.print.start': ('POST', '/printer/print/start'),
+            'printer.gcode.script': ('POST', '/printer/gcode/script'),
+        }
+
+        if method in http_map:
+            http_method, endpoint = http_map[method]
+            try:
+                if http_method == 'POST':
+                    response = requests.post(
+                        f"{self.moonraker_url}{endpoint}",
+                        json=params,
+                        timeout=timeout
+                    )
+                    return response.status_code == 200
+            except Exception as e:
+                logger.error(f"HTTP fallback for {method} failed: {e}")
+
+        return False
+
     def execute_cancel_command(self):
         """Execute cancel command via Moonraker API"""
         try:
             if self.is_printing_cloud_job and self.current_job_id:
                 self.job_is_cancelling = True
 
-            response = requests.post(f"{self.moonraker_url}/printer/print/cancel", timeout=10)
-            if response.status_code == 200:
+            if self._send_moonraker_command('printer.print.cancel'):
                 logger.info("Print cancelled successfully")
 
                 if self.is_printing_cloud_job and self.current_job_id:
@@ -1813,7 +2506,7 @@ class PolarCloudService:
                     self.job_is_cancelling = False
                 self.job_is_preparing = False
             else:
-                logger.error(f"Failed to cancel print: {response.text}")
+                logger.error("Failed to cancel print")
                 self.job_is_cancelling = False
                 self.job_is_preparing = False
         except Exception as e:
@@ -1823,22 +2516,20 @@ class PolarCloudService:
     def execute_pause_command(self):
         """Execute pause command via Moonraker API"""
         try:
-            response = requests.post(f"{self.moonraker_url}/printer/print/pause", timeout=10)
-            if response.status_code == 200:
+            if self._send_moonraker_command('printer.print.pause'):
                 logger.info("Print paused successfully")
             else:
-                logger.error(f"Failed to pause print: {response.text}")
+                logger.error("Failed to pause print")
         except Exception as e:
             logger.error(f"Error executing pause command: {e}")
 
     def execute_resume_command(self):
         """Execute resume command via Moonraker API"""
         try:
-            response = requests.post(f"{self.moonraker_url}/printer/print/resume", timeout=10)
-            if response.status_code == 200:
+            if self._send_moonraker_command('printer.print.resume'):
                 logger.info("Print resumed successfully")
             else:
-                logger.error(f"Failed to resume print: {response.text}")
+                logger.error("Failed to resume print")
         except Exception as e:
             logger.error(f"Error executing resume command: {e}")
 
@@ -1934,27 +2625,19 @@ class PolarCloudService:
         try:
             if 'tool0' in temp_data:
                 temp = temp_data['tool0']
-                response = requests.post(
-                    f"{self.moonraker_url}/printer/gcode/script",
-                    json={"script": f"SET_HEATER_TEMPERATURE HEATER=extruder TARGET={temp}"},
-                    timeout=10
-                )
-                if response.status_code == 200:
+                script = f"SET_HEATER_TEMPERATURE HEATER=extruder TARGET={temp}"
+                if self._send_moonraker_command('printer.gcode.script', {'script': script}):
                     logger.info(f"Set extruder temperature to {temp}°C")
                 else:
-                    logger.error(f"Failed to set extruder temperature: {response.text}")
+                    logger.error("Failed to set extruder temperature")
 
             if 'bed' in temp_data:
                 temp = temp_data['bed']
-                response = requests.post(
-                    f"{self.moonraker_url}/printer/gcode/script",
-                    json={"script": f"SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET={temp}"},
-                    timeout=10
-                )
-                if response.status_code == 200:
+                script = f"SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET={temp}"
+                if self._send_moonraker_command('printer.gcode.script', {'script': script}):
                     logger.info(f"Set bed temperature to {temp}°C")
                 else:
-                    logger.error(f"Failed to set bed temperature: {response.text}")
+                    logger.error("Failed to set bed temperature")
 
         except Exception as e:
             logger.error(f"Error executing temperature command: {e}")
