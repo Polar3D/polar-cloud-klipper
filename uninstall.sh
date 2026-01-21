@@ -88,16 +88,16 @@ uninstall() {
         print_success "Removed Polar Cloud directory"
     fi
     
-    # Remove Moonraker plugin
+    # Remove legacy Moonraker plugin (if it exists from older installations)
     local moonraker_dirs=(
         "$HOME_DIR/moonraker/moonraker/components/polar_cloud.py"
         "/opt/moonraker/moonraker/components/polar_cloud.py"
     )
-    
+
     for file in "${moonraker_dirs[@]}"; do
         if [ -f "$file" ]; then
             sudo rm "$file"
-            print_success "Removed Moonraker plugin"
+            print_success "Removed legacy Moonraker plugin"
             break
         fi
     done

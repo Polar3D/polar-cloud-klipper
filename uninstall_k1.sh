@@ -76,10 +76,10 @@ uninstall() {
     # Remove PID file
     rm -f /var/run/polar_cloud.pid 2>/dev/null || true
 
-    # Remove Moonraker plugin
+    # Remove legacy Moonraker plugin (if it exists from older installations)
     if [ -f "$MOONRAKER_COMPONENTS/polar_cloud.py" ]; then
         rm -f "$MOONRAKER_COMPONENTS/polar_cloud.py"
-        print_success "Removed Moonraker plugin"
+        print_success "Removed legacy Moonraker plugin"
     fi
 
     # Ask about configuration file

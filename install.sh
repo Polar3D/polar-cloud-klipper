@@ -285,18 +285,17 @@ install_venv() {
 # Copy and configure files
 install_files() {
     print_info "Installing Polar Cloud files..."
-    
+
     # Main service file stays in git repo (no copying needed)
     print_success "Main service will run from git repository"
-    
-    # Copy Moonraker plugin
-    sudo cp "$SCRIPT_DIR/src/polar_cloud_moonraker.py" "$MOONRAKER_COMPONENTS/polar_cloud.py"
-    print_success "Installed Moonraker plugin"
-    
+
+    # Note: Moonraker plugin is no longer needed - the service now connects
+    # to Moonraker via WebSocket as an external agent
+
     # Copy web interface to web directory in git repo
     sudo -u "$USER" cp "$SCRIPT_DIR/src/polar_cloud_web.html" "$POLAR_DIR/web/index.html"
     print_success "Installed web interface"
-    
+
     # Copy configuration template if no config exists
     if [ ! -f "$PRINTER_DATA_DIR/config/polar_cloud.conf" ]; then
         sudo -u "$USER" cp "$SCRIPT_DIR/config/polar_cloud.conf.template" "$PRINTER_DATA_DIR/config/polar_cloud.conf"
@@ -304,10 +303,16 @@ install_files() {
     else
         print_info "Configuration file already exists, skipping"
     fi
-    
+
     # Copy test scripts
     if [ -d "$SCRIPT_DIR/scripts" ]; then
         sudo -u "$USER" sh -c "cp '$SCRIPT_DIR/scripts/'*.py '$POLAR_DIR/'" 2>/dev/null || true
+    fi
+
+    # Clean up old Moonraker plugin if it exists (from previous installations)
+    if [ -f "$MOONRAKER_COMPONENTS/polar_cloud.py" ]; then
+        sudo rm -f "$MOONRAKER_COMPONENTS/polar_cloud.py"
+        print_info "Removed legacy Moonraker plugin"
     fi
 }
 
@@ -331,24 +336,23 @@ install_service() {
 # Configure Moonraker
 configure_moonraker() {
     print_info "Configuring Moonraker..."
-    
+
     local moonraker_conf="$PRINTER_DATA_DIR/config/moonraker.conf"
-    
+
     if [ ! -f "$moonraker_conf" ]; then
         print_error "moonraker.conf not found at $moonraker_conf"
         return
     fi
-    
-    # Add Polar Cloud plugin section if it doesn't exist
-    if ! grep -q "\[polar_cloud\]" "$moonraker_conf"; then
-        echo "" >> "$moonraker_conf"
-        echo "[polar_cloud]" >> "$moonraker_conf"
-        echo "# Polar Cloud plugin configuration" >> "$moonraker_conf"
-        print_success "Added Polar Cloud plugin to moonraker.conf"
-    else
-        print_info "Polar Cloud plugin already configured in moonraker.conf"
+
+    # Remove old [polar_cloud] plugin section if it exists (no longer needed)
+    # The service now connects via WebSocket as an external agent
+    if grep -q "^\[polar_cloud\]$" "$moonraker_conf"; then
+        # Remove the [polar_cloud] section and its comment line
+        sed -i '/^\[polar_cloud\]$/,/^$/d' "$moonraker_conf"
+        sed -i '/# Polar Cloud plugin configuration/d' "$moonraker_conf"
+        print_info "Removed legacy [polar_cloud] plugin section"
     fi
-    
+
     # Add update manager section if it doesn't exist
     if ! grep -q "\[update_manager polar_cloud\]" "$moonraker_conf"; then
         echo "" >> "$moonraker_conf"
