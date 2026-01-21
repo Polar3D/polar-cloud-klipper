@@ -594,6 +594,7 @@ class PolarCloudService:
             ('polar_cloud_unregister', self._ext_handle_unregister),
             ('polar_cloud_config', self._ext_handle_config),
             ('polar_cloud_export_logs', self._ext_handle_export_logs),
+            ('polar_cloud_update', self._ext_handle_update),
         ]
 
         for method_name, handler in methods:
@@ -774,6 +775,25 @@ class PolarCloudService:
 
         except Exception as e:
             logger.error(f"Error handling export_logs extension method: {e}")
+            return {"error": str(e)}
+
+    def _ext_handle_update(self, params):
+        """Handle update request from frontend via extension method."""
+        try:
+            # Trigger the existing update command
+            # Run in background thread to not block the response
+            import threading
+
+            def do_update():
+                self.execute_update_command()
+
+            update_thread = threading.Thread(target=do_update, daemon=True)
+            update_thread.start()
+
+            return {"success": True, "message": "Update initiated"}
+
+        except Exception as e:
+            logger.error(f"Error handling update extension method: {e}")
             return {"error": str(e)}
 
     def setup_socketio_handlers(self):

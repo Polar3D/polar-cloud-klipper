@@ -433,7 +433,28 @@
     </div>
 
     <script>
-        const API_BASE = '/server/polar_cloud';
+        // Moonraker JSON-RPC endpoint for calling remote methods
+        const JSONRPC_URL = '/printer/jsonrpc';
+
+        // Helper to call remote methods registered by Polar Cloud agent
+        async function callRemoteMethod(method, params = {}) {
+            const response = await fetch(JSONRPC_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    jsonrpc: '2.0',
+                    method: method,
+                    params: params,
+                    id: Date.now()
+                })
+            });
+
+            const data = await response.json();
+            if (data.error) {
+                throw new Error(data.error.message || JSON.stringify(data.error));
+            }
+            return data.result;
+        }
 
         // State
         let currentStatus = {};
@@ -543,43 +564,20 @@
         async function loadStatus() {
             try {
                 showLoading(true);
-                const response = await fetch(`${API_BASE}/status`);
 
-                // Check if response is HTML instead of JSON
-                const contentType = response.headers.get("content-type");
-                if (!contentType || !contentType.includes("application/json")) {
-                    throw new Error("Server configuration error: Moonraker API not accessible. Please check nginx configuration.");
+                // Call the polar_cloud_status remote method via JSON-RPC
+                const result = await callRemoteMethod('polar_cloud_status');
+
+                if (result.error) {
+                    throw new Error(result.error);
                 }
 
-                const data = await response.json();
-
-                if (data.error) {
-                    throw new Error(data.error);
-                }
-
-                currentStatus = data.result;
+                currentStatus = result;
                 updateUI();
 
             } catch (error) {
                 console.error('Error loading status:', error);
-                // Provide more helpful error messages
-                if (error.message && error.message.includes('Unexpected token')) {
-                    showMessage('Configuration error: nginx is not properly routing /server/ to Moonraker. Please check your nginx configuration.', 'error');
-                } else if (error.message && error.message.includes('Server configuration error')) {
-                    showMessage(error.message, 'error');
-                } else {
-                    // Try to extract meaningful message from error object if it's a JSON string
-                    let errorText = error.message;
-                    try {
-                        const errorObj = JSON.parse(error.message);
-                        if (errorObj && errorObj.error) {
-                            errorText = errorObj.error;
-                        }
-                    } catch (e) {
-                        // Not a JSON string, use as is
-                    }
-                    showMessage('Failed to load status: ' + errorText, 'error');
-                }
+                showMessage('Failed to load status: ' + error.message, 'error');
 
                 // Set error state
                 serviceStatus.textContent = 'Error';
@@ -717,21 +715,14 @@
             try {
                 showLoading(true);
 
-                const response = await fetch(`${API_BASE}/register`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        username: username,
-                        pin: pin,
-                        machine_type: machineType,
-                        manufacturer: manufacturer,
-                        printer_type: printerType
-                    })
+                // Call the polar_cloud_register remote method via JSON-RPC
+                const result = await callRemoteMethod('polar_cloud_register', {
+                    username: username,
+                    pin: pin,
+                    machine_type: machineType,
+                    manufacturer: manufacturer,
+                    printer_type: printerType
                 });
-
-                const result = await response.json();
 
                 if (result.success) {
                     showMessage('Registration initiated. The service is connecting to Polar Cloud...', 'success');
@@ -785,11 +776,8 @@
             try {
                 showLoading(true);
 
-                const response = await fetch(`${API_BASE}/unregister`, {
-                    method: 'POST'
-                });
-
-                const result = await response.json();
+                // Call the polar_cloud_unregister remote method via JSON-RPC
+                const result = await callRemoteMethod('polar_cloud_unregister');
 
                 if (result.success) {
                     showMessage('Successfully disconnected from Polar Cloud', 'success');
@@ -811,20 +799,16 @@
                 showLoading(true);
                 showMessage('Generating diagnostic logs, please wait...', 'success');
 
-                const response = await fetch(`${API_BASE}/export_logs`);
-                const data = await response.json();
+                // Call the polar_cloud_export_logs remote method via JSON-RPC
+                const result = await callRemoteMethod('polar_cloud_export_logs');
 
-                if (data.error) {
-                    throw new Error(data.error);
-                }
-
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
+                if (result.error) {
+                    throw new Error(result.error);
                 }
 
                 // Get log content and filename from the response
-                const logContent = data.result.logs;
-                const filename = data.result.filename || 'polar_cloud_logs.txt';
+                const logContent = result.logs;
+                const filename = result.filename || 'polar_cloud_logs.txt';
 
                 // Create blob and download
                 const blob = new Blob([logContent], { type: 'text/plain' });
@@ -953,14 +937,8 @@
             updateButton.innerHTML = 'Updating...';
 
             try {
-                const response = await fetch('/server/polar_cloud/update', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    }
-                });
-
-                const result = await response.json();
+                // Call the polar_cloud_update remote method via JSON-RPC
+                const result = await callRemoteMethod('polar_cloud_update');
 
                 if (result.success) {
                     updateButton.innerHTML = 'Update Started!';
