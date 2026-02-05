@@ -848,7 +848,7 @@ class PolarCloudService:
                 self.load_config()
 
                 # Check if we need to register
-                self.serial_number = self.config.get('polar_cloud', 'serial_number', fallback=None)
+                self.serial_number = (self.config.get('polar_cloud', 'serial_number', fallback='') or '').strip() or None
                 username = self.config.get('polar_cloud', 'username', fallback='').strip()
                 pin = self.config.get('polar_cloud', 'pin', fallback='').strip()
 
@@ -936,6 +936,12 @@ class PolarCloudService:
                         reason = data.get("message", "No error message provided")
                     elif status == "DELETED":
                         reason = "Printer has been deleted from Polar Cloud"
+                        # Clear stale serial so the printer can re-register
+                        logger.info("Clearing serial number from config to allow re-registration")
+                        self.serial_number = None
+                        if self.config.has_option('polar_cloud', 'serial_number'):
+                            self.config.remove_option('polar_cloud', 'serial_number')
+                            self.save_config()
                     elif not success:
                         reason = f"Unknown status: {status}"
                 elif isinstance(data, str):
@@ -962,6 +968,12 @@ class PolarCloudService:
                         logger.error(f"Failure reason: {reason}")
                     self.hello_sent = False
                     self.write_status_file(error=f"Authentication failed: {reason}" if reason else "Authentication failed")
+
+                    # If printer was deleted, disconnect so auto-reconnect
+                    # triggers the registration flow with the cleared serial
+                    if status == "DELETED":
+                        logger.info("Disconnecting to re-register after DELETED status")
+                        self.sio.disconnect()
             except Exception as e:
                 logger.error(f"Error handling hello response: {e}")
                 self.write_status_file(error=f"Authentication error: {e}")
