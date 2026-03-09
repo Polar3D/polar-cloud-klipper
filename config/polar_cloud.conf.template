@@ -20,9 +20,12 @@ server_url = https://printer4.polar3d.com
 # User Credentials
 # You can set these here directly or use the web interface at /polar-cloud/
 # Get your PIN from: https://polar3d.com/
-username = 
-pin = 
-serial_number = 
+username =
+pin =
+
+# NOTE: serial_number is assigned automatically during registration.
+# Do NOT set this manually — it will be filled in by the service.
+# serial_number =
 
 # Printer Configuration
 # Machine types: Cartesian, Delta, Belt
