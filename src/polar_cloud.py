@@ -203,18 +203,34 @@ class MoonrakerConnection:
         threading.Thread(target=self._initialize_connection, daemon=True).start()
 
     def _on_message(self, ws, message):
-        """Handle incoming WebSocket message."""
+        """Handle incoming WebSocket message.
+
+        A WebSocket message from Moonraker is one of three JSON-RPC shapes:
+
+          * Response: has ``id`` and (``result`` or ``error``); no ``method``.
+            Pop the matching callback we recorded when the outbound request was
+            sent.
+          * Request: has both ``id`` and ``method``. The peer (typically a
+            web client invoking us via ``server.extensions.request``) expects
+            a JSON-RPC reply with the same ``id``.
+          * Notification: has ``method`` but no ``id``. Fire-and-forget; used
+            by Moonraker for ``notify_*`` events.
+
+        Note that the legacy logic of "any message with an id is a response"
+        is wrong: requests carry an id too, and treating them as responses
+        silently swallowed every frontend invocation.
+        """
         try:
             data = json.loads(message)
 
-            # Handle JSON-RPC response (has 'id' field)
-            if 'id' in data:
-                callback = None
-                with self.request_callbacks_lock:
-                    req_id = data['id']
-                    if req_id in self.request_callbacks:
-                        callback = self.request_callbacks.pop(req_id)
+            req_id = data.get('id')
+            method = data.get('method')
+            params = data.get('params', {})
 
+            # JSON-RPC response: id present, no method.
+            if req_id is not None and method is None:
+                with self.request_callbacks_lock:
+                    callback = self.request_callbacks.pop(req_id, None)
                 if callback:
                     try:
                         callback(data)
@@ -222,9 +238,32 @@ class MoonrakerConnection:
                         logger.error(f"Error in request callback: {e}")
                 return
 
-            # Handle JSON-RPC notification (has 'method' field, no 'id')
-            method = data.get('method', '')
-            params = data.get('params', {})
+            # JSON-RPC request: id and method both present. The caller wants
+            # a response, so dispatch a handler and reply with the same id.
+            if req_id is not None and method is not None:
+                handler = self.remote_method_handlers.get(method)
+                if handler is None:
+                    self._send_response(req_id, error={
+                        'code': -32601,
+                        'message': f"Method not found: {method}"
+                    })
+                    return
+                try:
+                    result = handler(params)
+                except Exception as e:
+                    logger.exception(f"Error in remote method handler {method}")
+                    self._send_response(req_id, error={
+                        'code': -32000,
+                        'message': str(e)
+                    })
+                    return
+                self._send_response(req_id, result=result)
+                return
+
+            # JSON-RPC notification path (method present, no id).
+            if method is None:
+                logger.warning(f"Received WebSocket message with neither method nor id: {data}")
+                return
 
             # Handle Moonraker notifications
             if method == 'notify_klippy_ready':
@@ -250,15 +289,6 @@ class MoonrakerConnection:
                         self._merge_status(status)
                     self.on_event('status_update', status)
 
-            elif method in self.remote_method_handlers:
-                # Handle registered remote method calls
-                handler = self.remote_method_handlers[method]
-                try:
-                    result = handler(params)
-                    # Remote methods don't expect responses
-                except Exception as e:
-                    logger.error(f"Error in remote method handler {method}: {e}")
-
             else:
                 # Pass unhandled notifications to event handler
                 self.on_event('notification', {'method': method, 'params': params})
@@ -267,6 +297,24 @@ class MoonrakerConnection:
             logger.error(f"Invalid JSON from Moonraker: {e}")
         except Exception as e:
             logger.error(f"Error handling Moonraker message: {e}")
+
+    def _send_response(self, req_id, result=None, error=None):
+        """Send a JSON-RPC response back over the WebSocket.
+
+        Used to reply to incoming requests dispatched from
+        ``_on_message``. Exactly one of ``result`` / ``error`` should be set;
+        if both are None, an empty result is sent (which is a valid JSON-RPC
+        response).
+        """
+        response = {'jsonrpc': '2.0', 'id': req_id}
+        if error is not None:
+            response['error'] = error
+        else:
+            response['result'] = result
+        try:
+            self.message_queue.put_nowait(response)
+        except queue.Full:
+            logger.warning(f"Moonraker message queue full, dropping response for id {req_id}")
 
     def _on_error(self, ws, error):
         """Handle WebSocket error."""
@@ -417,21 +465,34 @@ class MoonrakerConnection:
             return self.printer_state.copy()
 
     def register_remote_method(self, method_name, handler):
-        """Register a handler for remote method calls."""
+        """Register a handler that incoming JSON-RPC requests can invoke.
+
+        Web clients reach these methods via Moonraker's
+        ``server.extensions.request`` endpoint, e.g.::
+
+            POST /server/jsonrpc
+            {
+              "jsonrpc": "2.0",
+              "method": "server.extensions.request",
+              "params": {"agent": "polar_cloud", "method": <method_name>,
+                         "arguments": <params>},
+              "id": ...
+            }
+
+        Moonraker forwards that to this agent as a JSON-RPC request over the
+        WebSocket; ``_on_message`` dispatches it to the registered handler and
+        replies with the handler's return value (or an error).
+
+        Note: we deliberately do *not* call ``connection.register_remote_method``
+        here. That endpoint registers a method as Klippy-bridged (one-way,
+        Klippy -> agent) via ``klippy_connection.register_method_from_agent``,
+        which is the wrong path for frontend-callable request/response methods.
+        Pre-registration is not required for ``server.extensions.request`` —
+        Moonraker just dispatches whatever method name arrives to the agent's
+        WebSocket connection.
+        """
         self.remote_method_handlers[method_name] = handler
-
-        # Also register with Moonraker
-        def on_register(data):
-            if 'error' in data:
-                logger.error(f"Failed to register remote method {method_name}: {data['error']}")
-            else:
-                logger.info(f"Registered remote method: {method_name}")
-
-        self.send_request(
-            'connection.register_remote_method',
-            params={'method_name': method_name},
-            callback=on_register
-        )
+        logger.info(f"Registered remote method: {method_name}")
 
 
 class PolarCloudService:
