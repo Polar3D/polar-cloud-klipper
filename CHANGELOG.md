@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.2] - 2026-04-07
+
+### Fixed
+- **Hourly update check failing with HTTP 404.** The agent's GitHub API
+  call still pointed at the pre-rename namespace
+  (`vanmorris/polar-cloud-klipper`) instead of `Polar3D/polar-cloud-klipper`,
+  so `latest_version` was never populated and the log was noisy with
+  `Failed to check for updates: HTTP 404` once an hour. The
+  `version_info.latest_version` field returned from `polar_cloud_status`
+  is now populated correctly.
+- **Agent identification URL** sent to Moonraker also pointed at the old
+  namespace. Cosmetic, but it surfaced in `/server/extensions/list` and
+  any UI that displays connected agents. Now reports the canonical
+  `Polar3D/polar-cloud-klipper` URL.
+
 ## [1.5.1] - 2026-04-07
 
 ### Fixed

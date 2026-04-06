@@ -373,7 +373,7 @@ class MoonrakerConnection:
             'client_name': 'polar_cloud',
             'version': self.version,
             'type': 'agent',
-            'url': 'https://github.com/vanmorris/polar-cloud-klipper'
+            'url': 'https://github.com/Polar3D/polar-cloud-klipper'
         }
 
         def on_identify(data):
@@ -1377,7 +1377,7 @@ class PolarCloudService:
             self.last_version_check = current_time
 
             response = requests.get(
-                "https://api.github.com/repos/vanmorris/polar-cloud-klipper/releases/latest",
+                "https://api.github.com/repos/Polar3D/polar-cloud-klipper/releases/latest",
                 timeout=10
             )
 
