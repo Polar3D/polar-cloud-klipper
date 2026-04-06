@@ -2,6 +2,42 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.1] - 2026-04-07
+
+### Fixed
+- **Web UI (`/polar-cloud/`) was completely broken** since the WebSocket
+  JSON-RPC migration, showing "Not Found" / loading errors on every call.
+  Three interacting bugs caused this:
+  - The agent's `_on_message` treated any JSON-RPC frame with an `id` as
+    a response, silently dropping every incoming request from the web UI.
+  - Handler return values were discarded, so even if dispatch had worked
+    Moonraker's `call_method_with_response` would have hung until the
+    websocket dropped.
+  - The web UI posted to `/printer/jsonrpc` (which doesn't exist) using
+    bare method names. Agent methods must be invoked via Moonraker's
+    `server.extensions.request` wrapper.
+- The web page now correctly reflects real-time service / connection /
+  registration status on first load and across refreshes.
+
+### Changed
+- Agent no longer calls `connection.register_remote_method` on Moonraker
+  for frontend handler registration. That endpoint registered methods as
+  Klippy-bridged one-way calls — the wrong contract for request/response.
+  Pre-registration isn't required for `server.extensions.request`;
+  Moonraker forwards arbitrary method names to the agent's WebSocket
+  connection. Startup is slightly faster and quieter as a result.
+
+### Technical Notes
+- `_on_message` now correctly distinguishes JSON-RPC requests, responses,
+  and notifications and replies to requests with proper `result` /
+  `error` envelopes (`-32601` for unknown method, `-32000` for handler
+  exceptions).
+- Both `_on_message` and `register_remote_method` now have docstrings
+  explaining the protocol contract so this doesn't drift again.
+- Verified end-to-end on Creality K1C with Moonraker v0.9.3-128. Fix is
+  in shared code with no printer-specific assumptions; safe for all
+  supported printer types.
+
 ## [1.2.0] - 2025-12-02
 
 ### Added
