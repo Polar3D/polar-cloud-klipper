@@ -433,18 +433,31 @@
     </div>
 
     <script>
-        // Moonraker JSON-RPC endpoint for calling remote methods
-        const JSONRPC_URL = '/printer/jsonrpc';
+        // Moonraker JSON-RPC endpoint. Agent methods are reached by wrapping
+        // the call in `server.extensions.request` (see callRemoteMethod below);
+        // this is the standard Moonraker path for invoking methods on a
+        // connected agent. Bare method names sent to /server/jsonrpc would
+        // return "Method not found" because agent methods are not registered
+        // in Moonraker's top-level RPC namespace.
+        const JSONRPC_URL = '/server/jsonrpc';
+        const POLAR_AGENT_NAME = 'polar_cloud';
 
-        // Helper to call remote methods registered by Polar Cloud agent
+        // Helper to call methods exposed by the Polar Cloud agent.
+        // The browser POSTs `server.extensions.request` to Moonraker, which
+        // forwards `{method, arguments}` to the agent's WebSocket and awaits
+        // the agent's JSON-RPC response.
         async function callRemoteMethod(method, params = {}) {
             const response = await fetch(JSONRPC_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     jsonrpc: '2.0',
-                    method: method,
-                    params: params,
+                    method: 'server.extensions.request',
+                    params: {
+                        agent: POLAR_AGENT_NAME,
+                        method: method,
+                        arguments: params
+                    },
                     id: Date.now()
                 })
             });
