@@ -305,20 +305,135 @@ EOF
     install_service "$INSTALL_DIR" "$PRINTER_DATA"
 }
 
-# Install service (BusyBox-compatible)
-install_service() {
+# Install Rinkhals app (for Anycubic Kobra S1 with Rinkhals firmware)
+install_rinkhals_app() {
     INSTALL_DIR="$1"
     PRINTER_DATA="$2"
 
-    print_info "Installing service..."
+    print_info "Installing as Rinkhals app..."
 
-    # Build environment variable exports for Rinkhals
-    ENV_EXPORTS=""
-    if is_rinkhals; then
-        ENV_EXPORTS="export PYTHONPATH=\"\$POLAR_DIR/lib:\$PYTHONPATH\"
-export LD_LIBRARY_PATH=\"/ac_lib/lib/third_lib:\$LD_LIBRARY_PATH\""
-        print_info "Adding Rinkhals environment variables to service script"
+    # Find the current Rinkhals version directory
+    RINKHALS_CURRENT=$(readlink -f /useremain/rinkhals/.current 2>/dev/null)
+    if [ -z "$RINKHALS_CURRENT" ]; then
+        RINKHALS_CURRENT=$(ls -d /useremain/rinkhals/20* 2>/dev/null | tail -1)
     fi
+
+    if [ -z "$RINKHALS_CURRENT" ]; then
+        print_error "Could not find Rinkhals installation directory"
+        return 1
+    fi
+
+    RINKHALS_APPS="$RINKHALS_CURRENT/home/rinkhals/apps"
+    APP_DIR="$RINKHALS_APPS/60-polar-cloud"
+
+    print_info "Rinkhals apps directory: $RINKHALS_APPS"
+
+    # Create the app directory
+    mkdir -p "$APP_DIR"
+
+    # Create app.json
+    cat > "$APP_DIR/app.json" << 'EOF'
+{
+    "$version": "1",
+    "name": "Polar Cloud",
+    "description": "Connect your printer to Polar Cloud for remote monitoring and control.",
+    "version": "1.0.0"
+}
+EOF
+    print_success "Created app.json"
+
+    # Create app.sh
+    cat > "$APP_DIR/app.sh" << EOF
+. /useremain/rinkhals/.current/tools.sh
+
+APP_ROOT=\$(dirname \$(realpath \$0))
+POLAR_DIR="$INSTALL_DIR"
+PIDFILE="/var/run/polar_cloud.pid"
+LOGFILE="$PRINTER_DATA/logs/polar_cloud.log"
+
+export PYTHONPATH="\$POLAR_DIR/lib:\$PYTHONPATH"
+export LD_LIBRARY_PATH="/ac_lib/lib/third_lib:\$LD_LIBRARY_PATH"
+
+status() {
+    if [ -f "\$PIDFILE" ]; then
+        PID=\$(cat "\$PIDFILE")
+        if kill -0 "\$PID" 2>/dev/null; then
+            report_status \$APP_STATUS_STARTED "\$PID"
+            return
+        fi
+        rm -f "\$PIDFILE"
+    fi
+    report_status \$APP_STATUS_STOPPED
+}
+
+start() {
+    # Check if already running
+    if [ -f "\$PIDFILE" ]; then
+        PID=\$(cat "\$PIDFILE")
+        if kill -0 "\$PID" 2>/dev/null; then
+            log "Polar Cloud already running (PID: \$PID)"
+            return 0
+        fi
+        rm -f "\$PIDFILE"
+    fi
+
+    log "Starting Polar Cloud..."
+
+    if [ ! -d "\$POLAR_DIR" ]; then
+        log "Polar Cloud not installed at \$POLAR_DIR"
+        return 1
+    fi
+
+    cd "\$POLAR_DIR"
+    nohup python3 "\$POLAR_DIR/src/polar_cloud.py" >> "\$LOGFILE" 2>&1 &
+    PID=\$!
+    echo \$PID > "\$PIDFILE"
+    log "Polar Cloud started (PID: \$PID)"
+}
+
+stop() {
+    log "Stopping Polar Cloud..."
+    if [ -f "\$PIDFILE" ]; then
+        PID=\$(cat "\$PIDFILE")
+        kill "\$PID" 2>/dev/null
+        rm -f "\$PIDFILE"
+    fi
+    log "Polar Cloud stopped"
+}
+
+case "\$1" in
+    status) status ;;
+    start)  start ;;
+    stop)   stop ;;
+    *)      echo "Usage: \$0 {status|start|stop}" ;;
+esac
+EOF
+    chmod +x "$APP_DIR/app.sh"
+    print_success "Created app.sh"
+
+    # Enable the app
+    touch "$APP_DIR/.enabled"
+    print_success "Enabled Polar Cloud app"
+
+    # Also create a convenience script in the install directory
+    SERVICE_SCRIPT="$INSTALL_DIR/polar_cloud_service.sh"
+    cat > "$SERVICE_SCRIPT" << EOF
+#!/bin/sh
+# Convenience wrapper for Rinkhals app
+$APP_DIR/app.sh \$1
+EOF
+    chmod +x "$SERVICE_SCRIPT"
+
+    print_info "Starting Polar Cloud via Rinkhals app..."
+    "$APP_DIR/app.sh" start
+}
+
+# Install service for non-Rinkhals systems (Creality K1, etc.)
+install_init_service() {
+    INSTALL_DIR="$1"
+    PRINTER_DATA="$2"
+
+    print_info "Installing init.d service..."
 
     # Create service script
     SERVICE_SCRIPT="$INSTALL_DIR/polar_cloud_service.sh"
@@ -330,7 +445,6 @@ POLAR_DIR="$INSTALL_DIR"
 PIDFILE="/var/run/polar_cloud.pid"
 LOGFILE="$PRINTER_DATA/logs/polar_cloud.log"
 PYTHON_CMD="$PYTHON_CMD"
-$ENV_EXPORTS
 
 start() {
     if [ -f "\$PIDFILE" ] && kill -0 \$(cat "\$PIDFILE") 2>/dev/null; then
@@ -384,8 +498,8 @@ EOF
     chmod +x "$SERVICE_SCRIPT"
     print_success "Created service script: $SERVICE_SCRIPT"
 
-    # Try to install init script if possible
-    if [ -d "/etc/init.d" ]; then
+    # Try to install init script if /etc/init.d exists and is writable
+    if [ -d "/etc/init.d" ] && [ -w "/etc/init.d" ]; then
         INIT_SCRIPT="/etc/init.d/S99polar_cloud"
         cat > "$INIT_SCRIPT" << EOF
 #!/bin/sh
@@ -394,10 +508,29 @@ $SERVICE_SCRIPT \$1
 EOF
         chmod +x "$INIT_SCRIPT"
         print_success "Created init script: $INIT_SCRIPT"
+    else
+        print_warning "Could not create init script - service won't auto-start on boot"
+        print_info "You may need to add $SERVICE_SCRIPT to your startup scripts manually"
     fi
 
     print_info "Starting Polar Cloud service..."
     "$SERVICE_SCRIPT" start
+}
+
+# Install service (platform-specific)
+install_service() {
+    INSTALL_DIR="$1"
+    PRINTER_DATA="$2"
+
+    print_info "Installing service..."
+
+    if is_rinkhals; then
+        # Rinkhals uses its own app framework for startup
+        install_rinkhals_app "$INSTALL_DIR" "$PRINTER_DATA"
+    else
+        # Other embedded systems use init.d
+        install_init_service "$INSTALL_DIR" "$PRINTER_DATA"
+    fi
 }
 
 # Main installation flow
