@@ -1826,23 +1826,39 @@ class PolarCloudService:
         import tempfile
         import os
 
-        # Find ffmpeg - check common embedded system paths
-        ffmpeg_paths = [
-            '/ac_lib/lib/third_bin/ffmpeg',  # Anycubic Kobra S1
-            '/usr/bin/ffmpeg',
-            '/usr/local/bin/ffmpeg',
-            'ffmpeg'
-        ]
+        # Use cached ffmpeg path and environment if available
+        if hasattr(self, '_ffmpeg_cache') and self._ffmpeg_cache.get('cmd'):
+            ffmpeg_cmd = self._ffmpeg_cache['cmd']
+            ffmpeg_env = self._ffmpeg_cache['env']
+        else:
+            # Set up environment with library paths for embedded systems
+            ffmpeg_env = os.environ.copy()
+            ld_path = ffmpeg_env.get('LD_LIBRARY_PATH', '')
+            # Add Anycubic Kobra S1 ffmpeg library path
+            if '/ac_lib/lib/third_lib' not in ld_path:
+                ffmpeg_env['LD_LIBRARY_PATH'] = '/ac_lib/lib/third_lib:' + ld_path
 
-        ffmpeg_cmd = None
-        for path in ffmpeg_paths:
-            try:
-                result = subprocess.run([path, '-version'], capture_output=True, timeout=5)
-                if result.returncode == 0:
-                    ffmpeg_cmd = path
-                    break
-            except:
-                continue
+            # Find ffmpeg - check common embedded system paths
+            ffmpeg_paths = [
+                '/ac_lib/lib/third_bin/ffmpeg',  # Anycubic Kobra S1
+                '/usr/bin/ffmpeg',
+                '/usr/local/bin/ffmpeg',
+                'ffmpeg'
+            ]
+
+            ffmpeg_cmd = None
+            for path in ffmpeg_paths:
+                try:
+                    result = subprocess.run([path, '-version'], capture_output=True, timeout=5, env=ffmpeg_env)
+                    if result.returncode == 0:
+                        ffmpeg_cmd = path
+                        logger.debug(f"Found ffmpeg at: {path}")
+                        break
+                except:
+                    continue
+
+            # Cache the result (even if None, to avoid repeated searches)
+            self._ffmpeg_cache = {'cmd': ffmpeg_cmd, 'env': ffmpeg_env}
 
         if not ffmpeg_cmd:
             logger.debug("ffmpeg not found, cannot resize image")
@@ -1865,7 +1881,7 @@ class PolarCloudService:
                         ffmpeg_cmd, '-y', '-i', input_path,
                         '-q:v', str(quality),  # Lower = better quality, 2-31 range
                         output_path
-                    ], capture_output=True, timeout=30)
+                    ], capture_output=True, timeout=30, env=ffmpeg_env)
 
                     if result.returncode == 0 and os.path.exists(output_path):
                         with open(output_path, 'rb') as f:
@@ -1891,7 +1907,7 @@ class PolarCloudService:
                         '-vf', f'scale={scale}',
                         '-q:v', '10',
                         output_path
-                    ], capture_output=True, timeout=30)
+                    ], capture_output=True, timeout=30, env=ffmpeg_env)
 
                     if result.returncode == 0 and os.path.exists(output_path):
                         with open(output_path, 'rb') as f:
