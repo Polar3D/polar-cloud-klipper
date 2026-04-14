@@ -1514,6 +1514,7 @@ class PolarCloudService:
 
             printer_info = self.get_moonraker_data("printer/info")
             print_stats = self.get_moonraker_data("printer/objects/query?print_stats")
+            virtual_sdcard = self.get_moonraker_data("printer/objects/query?virtual_sdcard")
             toolhead = self.get_moonraker_data("printer/objects/query?toolhead")
             heaters = self.get_moonraker_data("printer/objects/query?heater_bed&extruder&extruder1&heater_chamber")
 
@@ -1536,6 +1537,15 @@ class PolarCloudService:
                     stats = result_data['status']['print_stats']
                 elif 'print_stats' in result_data:
                     stats = result_data['print_stats']
+
+            # Parse virtual_sdcard for file position/size (not all Moonraker versions include these in print_stats)
+            vsd = None
+            if virtual_sdcard and 'result' in virtual_sdcard:
+                result_data = virtual_sdcard['result']
+                if 'status' in result_data and 'virtual_sdcard' in result_data['status']:
+                    vsd = result_data['status']['virtual_sdcard']
+                elif 'virtual_sdcard' in result_data:
+                    vsd = result_data['virtual_sdcard']
 
             if self.job_is_preparing and self.is_printing_cloud_job and self.current_job_id:
                 status = self.PSTATE_PREPARING
@@ -1568,8 +1578,13 @@ class PolarCloudService:
                         status = self.PSTATE_SERIAL
                         progress = "Job Printing"
 
-                    file_position = stats.get('file_position', 0)
-                    file_size = stats.get('file_size', 0)
+                    # Get file position/size from virtual_sdcard (primary) or print_stats (fallback)
+                    if vsd:
+                        file_position = vsd.get('file_position', 0)
+                        file_size = vsd.get('file_size', 0)
+                    else:
+                        file_position = stats.get('file_position', 0)
+                        file_size = stats.get('file_size', 0)
                     bytes_read = file_position
 
                     filament_used = str(int(stats.get('filament_used', 0)))
@@ -1596,8 +1611,13 @@ class PolarCloudService:
                     print_seconds = int(stats.get('print_duration', 0))
                     estimated_time = str(int(stats.get('total_duration', 0)))
 
-                    file_position = stats.get('file_position', 0)
-                    file_size = stats.get('file_size', 0)
+                    # Get file position/size from virtual_sdcard (primary) or print_stats (fallback)
+                    if vsd:
+                        file_position = vsd.get('file_position', 0)
+                        file_size = vsd.get('file_size', 0)
+                    else:
+                        file_position = stats.get('file_position', 0)
+                        file_size = stats.get('file_size', 0)
                     bytes_read = file_position
                     filament_used = str(int(stats.get('filament_used', 0)))
 
@@ -1623,8 +1643,13 @@ class PolarCloudService:
                     print_seconds = int(stats.get('print_duration', 0))
                     estimated_time = str(int(stats.get('total_duration', 0)))
 
-                    file_position = stats.get('file_position', 0)
-                    file_size = stats.get('file_size', 0)
+                    # Get file position/size from virtual_sdcard (primary) or print_stats (fallback)
+                    if vsd:
+                        file_position = vsd.get('file_position', 0)
+                        file_size = vsd.get('file_size', 0)
+                    else:
+                        file_position = stats.get('file_position', 0)
+                        file_size = stats.get('file_size', 0)
                     bytes_read = file_position if file_position > 0 else file_size
                     filament_used = str(int(stats.get('filament_used', 0)))
 
