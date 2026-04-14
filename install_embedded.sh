@@ -108,9 +108,29 @@ check_requirements() {
     fi
 }
 
+# Detect if running on Anycubic Kobra S1 (Rinkhals)
+is_rinkhals() {
+    [ -d "/userdata/app/gk/printer_data" ] && [ -f "/ac_lib/lib/third_bin/ffmpeg" ]
+}
+
 # Check Python dependencies
 check_python_deps() {
     print_info "Checking Python dependencies..."
+
+    INSTALL_DIR=$(detect_install_dir)
+    LIB_DIR="$INSTALL_DIR/lib"
+
+    # On Rinkhals, we must install to a persistent location
+    # The default site-packages is on a tmpfs and gets wiped on reboot
+    if is_rinkhals; then
+        print_info "Detected Anycubic Kobra S1 (Rinkhals)"
+        print_info "Installing packages to persistent location: $LIB_DIR"
+        USE_TARGET_DIR=true
+        mkdir -p "$LIB_DIR"
+        export PYTHONPATH="$LIB_DIR:$PYTHONPATH"
+    else
+        USE_TARGET_DIR=false
+    fi
 
     # Required modules
     MISSING_DEPS=""
@@ -131,6 +151,8 @@ check_python_deps() {
     fi
 
     # Check for RSA library (cryptography or rsa)
+    # Note: cryptography requires Rust compilation which isn't available on Rinkhals
+    # so we always use the pure-Python rsa package on embedded systems
     if ! $PYTHON_CMD -c "import cryptography" 2>/dev/null; then
         if ! $PYTHON_CMD -c "import rsa" 2>/dev/null; then
             MISSING_DEPS="$MISSING_DEPS rsa"
@@ -147,18 +169,29 @@ check_python_deps() {
 
         for pkg in $MISSING_DEPS; do
             print_info "Installing $pkg..."
-            # Try system-wide install first (for root on embedded systems)
-            # Use --break-system-packages for newer pip versions that require it
-            if $PYTHON_CMD -m pip install "$pkg" --break-system-packages 2>/dev/null; then
-                print_success "Installed $pkg"
-            elif $PYTHON_CMD -m pip install "$pkg" 2>/dev/null; then
-                print_success "Installed $pkg"
-            elif $PYTHON_CMD -m pip install --user "$pkg" 2>/dev/null; then
-                print_success "Installed $pkg (user)"
+            if [ "$USE_TARGET_DIR" = true ]; then
+                # Install to persistent location for Rinkhals
+                if $PYTHON_CMD -m pip install --target="$LIB_DIR" "$pkg" 2>/dev/null; then
+                    print_success "Installed $pkg to $LIB_DIR"
+                else
+                    print_error "Failed to install $pkg"
+                    print_error "Please install manually: $PYTHON_CMD -m pip install --target=$LIB_DIR $pkg"
+                    exit 1
+                fi
             else
-                print_error "Failed to install $pkg"
-                print_error "Please install manually: $PYTHON_CMD -m pip install $pkg"
-                exit 1
+                # Try system-wide install first (for root on embedded systems)
+                # Use --break-system-packages for newer pip versions that require it
+                if $PYTHON_CMD -m pip install "$pkg" --break-system-packages 2>/dev/null; then
+                    print_success "Installed $pkg"
+                elif $PYTHON_CMD -m pip install "$pkg" 2>/dev/null; then
+                    print_success "Installed $pkg"
+                elif $PYTHON_CMD -m pip install --user "$pkg" 2>/dev/null; then
+                    print_success "Installed $pkg (user)"
+                else
+                    print_error "Failed to install $pkg"
+                    print_error "Please install manually: $PYTHON_CMD -m pip install $pkg"
+                    exit 1
+                fi
             fi
         done
 
@@ -172,6 +205,9 @@ check_python_deps() {
         if [ -n "$VERIFY_FAILED" ]; then
             print_error "Package verification failed for:$VERIFY_FAILED"
             print_error "Packages were installed but Python cannot import them."
+            if [ "$USE_TARGET_DIR" = true ]; then
+                print_info "PYTHONPATH is set to: $PYTHONPATH"
+            fi
             print_info "This may be a PATH issue. Try running:"
             print_info "  $PYTHON_CMD -m pip show websocket-client"
             print_info "  $PYTHON_CMD -c \"import sys; print(sys.path)\""
@@ -276,6 +312,14 @@ install_service() {
 
     print_info "Installing service..."
 
+    # Build environment variable exports for Rinkhals
+    ENV_EXPORTS=""
+    if is_rinkhals; then
+        ENV_EXPORTS="export PYTHONPATH=\"\$POLAR_DIR/lib:\$PYTHONPATH\"
+export LD_LIBRARY_PATH=\"/ac_lib/lib/third_lib:\$LD_LIBRARY_PATH\""
+        print_info "Adding Rinkhals environment variables to service script"
+    fi
+
     # Create service script
     SERVICE_SCRIPT="$INSTALL_DIR/polar_cloud_service.sh"
     cat > "$SERVICE_SCRIPT" << EOF
@@ -286,6 +330,7 @@ POLAR_DIR="$INSTALL_DIR"
 PIDFILE="/var/run/polar_cloud.pid"
 LOGFILE="$PRINTER_DATA/logs/polar_cloud.log"
 PYTHON_CMD="$PYTHON_CMD"
+$ENV_EXPORTS
 
 start() {
     if [ -f "\$PIDFILE" ] && kill -0 \$(cat "\$PIDFILE") 2>/dev/null; then
