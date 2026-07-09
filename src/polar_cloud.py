@@ -9,6 +9,7 @@ including Creality K1/K1C/K1 Max which cannot install aiohttp.
 
 import json
 import logging
+import logging.handlers
 import os
 import subprocess
 import uuid
@@ -101,7 +102,13 @@ logger.propagate = False  # Prevent duplicate logging from root logger
 if not logger.handlers:
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-    file_handler = logging.FileHandler(os.path.join(PRINTER_DATA_PATH, 'logs/polar_cloud.log'))
+    # Rotate the log so it can't grow without bound (previously seen at 300+ MB).
+    # 5 MB per file x 3 backups = 20 MB max on disk.
+    file_handler = logging.handlers.RotatingFileHandler(
+        os.path.join(PRINTER_DATA_PATH, 'logs/polar_cloud.log'),
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+    )
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
@@ -533,6 +540,14 @@ class PolarCloudService:
         self.public_key = None
         self.challenge = None
         self.hello_sent = False
+        # Authentication state, distinct from hello_sent (which only means the
+        # hello was emitted). authenticated is True only once the server returns
+        # a successful helloResponse. A watchdog uses _auth_deadline to force a
+        # reconnect if the handshake never completes (e.g. the cloud drops the
+        # response during an outage), instead of sitting connected-but-idle.
+        self.authenticated = False
+        self._auth_deadline = None
+        self.hello_timeout = 30  # seconds to complete the hello handshake
         self.status_interval = 5  # Send status every 5 seconds
         self.moonraker_url = "http://localhost:7125"
         self.last_status = None
@@ -672,7 +687,7 @@ class PolarCloudService:
             return {
                 "service_status": "active",
                 "connected": self.connected,
-                "authenticated": self.hello_sent,
+                "authenticated": self.authenticated,
                 "registered": bool(self.serial_number),
                 "serial_number": self.serial_number or "",
                 "username": self.config.get('polar_cloud', 'username', fallback=''),
@@ -870,6 +885,10 @@ class PolarCloudService:
             logger.info("Connected to Polar Cloud Socket.IO server")
             self.connected = True
             self.hello_sent = False
+            self.authenticated = False
+            # Arm the handshake watchdog: welcome -> hello -> helloResponse must
+            # complete within hello_timeout, otherwise run() forces a reconnect.
+            self._auth_deadline = time.time() + self.hello_timeout
             # Don't clear challenge here - it may arrive before connect event completes
             # self.challenge = None
             self.write_status_file()
@@ -879,12 +898,16 @@ class PolarCloudService:
             logger.warning("Disconnected from Polar Cloud Socket.IO server")
             self.connected = False
             self.hello_sent = False
+            self.authenticated = False
+            self._auth_deadline = None
             self.write_status_file()
 
         @self.sio.event
         def connect_error(data):
             logger.error(f"Socket.IO connection error: {data}")
             self.connected = False
+            self.authenticated = False
+            self._auth_deadline = None
             self.write_status_file(error=f"Connection error: {data}")
 
         @self.sio.event
@@ -1016,9 +1039,15 @@ class PolarCloudService:
                 else:
                     reason = f"Unexpected response type: {type(data)}"
 
+                # A definitive response arrived, so disarm the handshake watchdog
+                # regardless of outcome (a FAILED response won't be fixed by
+                # reconnecting, and we don't want a reconnect storm).
+                self._auth_deadline = None
+
                 if success:
                     logger.info("Hello response received successfully")
                     self.hello_sent = True
+                    self.authenticated = True
                     self.last_error = None
                     self.last_error_time = None
                     self.write_status_file()
@@ -1033,6 +1062,7 @@ class PolarCloudService:
                     if reason:
                         logger.error(f"Failure reason: {reason}")
                     self.hello_sent = False
+                    self.authenticated = False
                     self.write_status_file(error=f"Authentication failed: {reason}" if reason else "Authentication failed")
 
                     # If printer was deleted, disconnect so auto-reconnect
@@ -1216,7 +1246,7 @@ class PolarCloudService:
 
             status = {
                 "connected": self.connected,
-                "authenticated": self.hello_sent,
+                "authenticated": self.authenticated,
                 "serial_number": self.serial_number or "",
                 "username": self.config.get('polar_cloud', 'username', fallback=''),
                 "machine_type": self.config.get('polar_cloud', 'machine_type', fallback='Cartesian'),
@@ -2327,15 +2357,56 @@ class PolarCloudService:
 
     def connect_socketio(self):
         """Connect to Polar Cloud Socket.IO server"""
+        # The socketio client's own reconnection thread may already be mid-attempt.
+        # Avoid a redundant connect() that would just raise.
+        if self.sio.connected:
+            self.connected = True
+            return True
+
         server_url = self.config.get('polar_cloud', 'server_url', fallback='https://printer4.polar3d.com')
 
         try:
             self.sio.connect(server_url, transports=['websocket', 'polling'])
             return self.connected
         except Exception as e:
-            logger.error(f"Error connecting to Polar Cloud Socket.IO server: {e}")
+            # When the built-in reconnection is already running, connect() raises
+            # "Client is not in a disconnected state". That's benign, so keep it
+            # out of the error log to avoid the noise seen during cloud outages.
+            msg = str(e).lower()
+            if 'disconnected state' in msg or 'already connected' in msg:
+                logger.debug(f"Connect skipped, client already (re)connecting: {e}")
+            else:
+                logger.error(f"Error connecting to Polar Cloud Socket.IO server: {e}")
             self.connected = False
             return False
+
+    def _check_connection_health(self):
+        """Watchdog that recovers from connected-but-unauthenticated wedges.
+
+        If the hello handshake never completes within hello_timeout (e.g. the
+        cloud drops the response during an outage), force a reconnect so a fresh
+        welcome/hello cycle starts instead of sitting idle forever. Also restarts
+        the status loop if it has died while we're still authenticated.
+        """
+        if self.authenticated:
+            if self._status_thread is None or not self._status_thread.is_alive():
+                logger.warning("Status loop not running while authenticated; restarting it")
+                self.start_status_loop()
+            return
+
+        deadline = self._auth_deadline
+        if deadline is not None and time.time() >= deadline:
+            logger.warning(
+                f"Hello handshake did not complete within {self.hello_timeout}s; "
+                "forcing reconnect to recover"
+            )
+            self._auth_deadline = None
+            try:
+                # An explicit disconnect does not trigger auto-reconnect, so the
+                # main loop reconnects cleanly on its next iteration.
+                self.sio.disconnect()
+            except Exception as e:
+                logger.error(f"Error forcing reconnect during health check: {e}")
 
     def start_status_loop(self):
         """Start the status loop in a background thread"""
@@ -2388,6 +2459,7 @@ class PolarCloudService:
                 if self.connected:
                     # Wait for events - the sync client handles this internally
                     # Just sleep and let handlers do their work
+                    self._check_connection_health()
                     time.sleep(1)
                 else:
                     time.sleep(5)  # Wait before trying to connect
