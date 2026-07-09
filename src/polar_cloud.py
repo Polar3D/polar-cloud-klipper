@@ -1515,6 +1515,7 @@ class PolarCloudService:
 
             printer_info = self.get_moonraker_data("printer/info")
             print_stats = self.get_moonraker_data("printer/objects/query?print_stats")
+            virtual_sdcard = self.get_moonraker_data("printer/objects/query?virtual_sdcard")
             toolhead = self.get_moonraker_data("printer/objects/query?toolhead")
             heaters = self.get_moonraker_data("printer/objects/query?heater_bed&extruder&extruder1&heater_chamber")
 
@@ -1537,6 +1538,15 @@ class PolarCloudService:
                     stats = result_data['status']['print_stats']
                 elif 'print_stats' in result_data:
                     stats = result_data['print_stats']
+
+            # Parse virtual_sdcard for file position/size (not all Moonraker versions include these in print_stats)
+            vsd = None
+            if virtual_sdcard and 'result' in virtual_sdcard:
+                result_data = virtual_sdcard['result']
+                if 'status' in result_data and 'virtual_sdcard' in result_data['status']:
+                    vsd = result_data['status']['virtual_sdcard']
+                elif 'virtual_sdcard' in result_data:
+                    vsd = result_data['virtual_sdcard']
 
             if self.job_is_preparing and self.is_printing_cloud_job and self.current_job_id:
                 status = self.PSTATE_PREPARING
@@ -1569,8 +1579,13 @@ class PolarCloudService:
                         status = self.PSTATE_SERIAL
                         progress = "Job Printing"
 
-                    file_position = stats.get('file_position', 0)
-                    file_size = stats.get('file_size', 0)
+                    # Get file position/size from virtual_sdcard (primary) or print_stats (fallback)
+                    if vsd:
+                        file_position = vsd.get('file_position', 0)
+                        file_size = vsd.get('file_size', 0)
+                    else:
+                        file_position = stats.get('file_position', 0)
+                        file_size = stats.get('file_size', 0)
                     bytes_read = file_position
 
                     filament_used = str(int(stats.get('filament_used', 0)))
@@ -1591,8 +1606,13 @@ class PolarCloudService:
                     print_seconds = int(stats.get('print_duration', 0))
                     estimated_time = str(int(stats.get('total_duration', 0)))
 
-                    file_position = stats.get('file_position', 0)
-                    file_size = stats.get('file_size', 0)
+                    # Get file position/size from virtual_sdcard (primary) or print_stats (fallback)
+                    if vsd:
+                        file_position = vsd.get('file_position', 0)
+                        file_size = vsd.get('file_size', 0)
+                    else:
+                        file_position = stats.get('file_position', 0)
+                        file_size = stats.get('file_size', 0)
                     bytes_read = file_position
                     filament_used = str(int(stats.get('filament_used', 0)))
 
@@ -1615,8 +1635,13 @@ class PolarCloudService:
                     print_seconds = int(stats.get('print_duration', 0))
                     estimated_time = str(int(stats.get('total_duration', 0)))
 
-                    file_position = stats.get('file_position', 0)
-                    file_size = stats.get('file_size', 0)
+                    # Get file position/size from virtual_sdcard (primary) or print_stats (fallback)
+                    if vsd:
+                        file_position = vsd.get('file_position', 0)
+                        file_size = vsd.get('file_size', 0)
+                    else:
+                        file_position = stats.get('file_position', 0)
+                        file_size = stats.get('file_size', 0)
                     bytes_read = file_position if file_position > 0 else file_size
                     filament_used = str(int(stats.get('filament_used', 0)))
 
@@ -1815,23 +1840,39 @@ class PolarCloudService:
         import tempfile
         import os
 
-        # Find ffmpeg - check common embedded system paths
-        ffmpeg_paths = [
-            '/ac_lib/lib/third_bin/ffmpeg',  # Anycubic Kobra S1
-            '/usr/bin/ffmpeg',
-            '/usr/local/bin/ffmpeg',
-            'ffmpeg'
-        ]
+        # Use cached ffmpeg path and environment if available
+        if hasattr(self, '_ffmpeg_cache') and self._ffmpeg_cache.get('cmd'):
+            ffmpeg_cmd = self._ffmpeg_cache['cmd']
+            ffmpeg_env = self._ffmpeg_cache['env']
+        else:
+            # Set up environment with library paths for embedded systems
+            ffmpeg_env = os.environ.copy()
+            ld_path = ffmpeg_env.get('LD_LIBRARY_PATH', '')
+            # Add Anycubic Kobra S1 ffmpeg library path
+            if '/ac_lib/lib/third_lib' not in ld_path:
+                ffmpeg_env['LD_LIBRARY_PATH'] = '/ac_lib/lib/third_lib:' + ld_path
 
-        ffmpeg_cmd = None
-        for path in ffmpeg_paths:
-            try:
-                result = subprocess.run([path, '-version'], capture_output=True, timeout=5)
-                if result.returncode == 0:
-                    ffmpeg_cmd = path
-                    break
-            except:
-                continue
+            # Find ffmpeg - check common embedded system paths
+            ffmpeg_paths = [
+                '/ac_lib/lib/third_bin/ffmpeg',  # Anycubic Kobra S1
+                '/usr/bin/ffmpeg',
+                '/usr/local/bin/ffmpeg',
+                'ffmpeg'
+            ]
+
+            ffmpeg_cmd = None
+            for path in ffmpeg_paths:
+                try:
+                    result = subprocess.run([path, '-version'], capture_output=True, timeout=5, env=ffmpeg_env)
+                    if result.returncode == 0:
+                        ffmpeg_cmd = path
+                        logger.debug(f"Found ffmpeg at: {path}")
+                        break
+                except:
+                    continue
+
+            # Cache the result (even if None, to avoid repeated searches)
+            self._ffmpeg_cache = {'cmd': ffmpeg_cmd, 'env': ffmpeg_env}
 
         if not ffmpeg_cmd:
             logger.debug("ffmpeg not found, cannot resize image")
@@ -1854,7 +1895,7 @@ class PolarCloudService:
                         ffmpeg_cmd, '-y', '-i', input_path,
                         '-q:v', str(quality),  # Lower = better quality, 2-31 range
                         output_path
-                    ], capture_output=True, timeout=30)
+                    ], capture_output=True, timeout=30, env=ffmpeg_env)
 
                     if result.returncode == 0 and os.path.exists(output_path):
                         with open(output_path, 'rb') as f:
@@ -1880,7 +1921,7 @@ class PolarCloudService:
                         '-vf', f'scale={scale}',
                         '-q:v', '10',
                         output_path
-                    ], capture_output=True, timeout=30)
+                    ], capture_output=True, timeout=30, env=ffmpeg_env)
 
                     if result.returncode == 0 and os.path.exists(output_path):
                         with open(output_path, 'rb') as f:

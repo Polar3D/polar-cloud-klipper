@@ -108,9 +108,29 @@ check_requirements() {
     fi
 }
 
+# Detect if running on Anycubic Kobra S1 (Rinkhals)
+is_rinkhals() {
+    [ -d "/userdata/app/gk/printer_data" ] && [ -f "/ac_lib/lib/third_bin/ffmpeg" ]
+}
+
 # Check Python dependencies
 check_python_deps() {
     print_info "Checking Python dependencies..."
+
+    INSTALL_DIR=$(detect_install_dir)
+    LIB_DIR="$INSTALL_DIR/lib"
+
+    # On Rinkhals, we must install to a persistent location
+    # The default site-packages is on a tmpfs and gets wiped on reboot
+    if is_rinkhals; then
+        print_info "Detected Anycubic Kobra S1 (Rinkhals)"
+        print_info "Installing packages to persistent location: $LIB_DIR"
+        USE_TARGET_DIR=true
+        mkdir -p "$LIB_DIR"
+        export PYTHONPATH="$LIB_DIR:$PYTHONPATH"
+    else
+        USE_TARGET_DIR=false
+    fi
 
     # Required modules
     MISSING_DEPS=""
@@ -131,6 +151,8 @@ check_python_deps() {
     fi
 
     # Check for RSA library (cryptography or rsa)
+    # Note: cryptography requires Rust compilation which isn't available on Rinkhals
+    # so we always use the pure-Python rsa package on embedded systems
     if ! $PYTHON_CMD -c "import cryptography" 2>/dev/null; then
         if ! $PYTHON_CMD -c "import rsa" 2>/dev/null; then
             MISSING_DEPS="$MISSING_DEPS rsa"
@@ -147,18 +169,29 @@ check_python_deps() {
 
         for pkg in $MISSING_DEPS; do
             print_info "Installing $pkg..."
-            # Try system-wide install first (for root on embedded systems)
-            # Use --break-system-packages for newer pip versions that require it
-            if $PYTHON_CMD -m pip install "$pkg" --break-system-packages 2>/dev/null; then
-                print_success "Installed $pkg"
-            elif $PYTHON_CMD -m pip install "$pkg" 2>/dev/null; then
-                print_success "Installed $pkg"
-            elif $PYTHON_CMD -m pip install --user "$pkg" 2>/dev/null; then
-                print_success "Installed $pkg (user)"
+            if [ "$USE_TARGET_DIR" = true ]; then
+                # Install to persistent location for Rinkhals
+                if $PYTHON_CMD -m pip install --target="$LIB_DIR" "$pkg" 2>/dev/null; then
+                    print_success "Installed $pkg to $LIB_DIR"
+                else
+                    print_error "Failed to install $pkg"
+                    print_error "Please install manually: $PYTHON_CMD -m pip install --target=$LIB_DIR $pkg"
+                    exit 1
+                fi
             else
-                print_error "Failed to install $pkg"
-                print_error "Please install manually: $PYTHON_CMD -m pip install $pkg"
-                exit 1
+                # Try system-wide install first (for root on embedded systems)
+                # Use --break-system-packages for newer pip versions that require it
+                if $PYTHON_CMD -m pip install "$pkg" --break-system-packages 2>/dev/null; then
+                    print_success "Installed $pkg"
+                elif $PYTHON_CMD -m pip install "$pkg" 2>/dev/null; then
+                    print_success "Installed $pkg"
+                elif $PYTHON_CMD -m pip install --user "$pkg" 2>/dev/null; then
+                    print_success "Installed $pkg (user)"
+                else
+                    print_error "Failed to install $pkg"
+                    print_error "Please install manually: $PYTHON_CMD -m pip install $pkg"
+                    exit 1
+                fi
             fi
         done
 
@@ -172,6 +205,9 @@ check_python_deps() {
         if [ -n "$VERIFY_FAILED" ]; then
             print_error "Package verification failed for:$VERIFY_FAILED"
             print_error "Packages were installed but Python cannot import them."
+            if [ "$USE_TARGET_DIR" = true ]; then
+                print_info "PYTHONPATH is set to: $PYTHONPATH"
+            fi
             print_info "This may be a PATH issue. Try running:"
             print_info "  $PYTHON_CMD -m pip show websocket-client"
             print_info "  $PYTHON_CMD -c \"import sys; print(sys.path)\""
@@ -269,12 +305,135 @@ EOF
     install_service "$INSTALL_DIR" "$PRINTER_DATA"
 }
 
-# Install service (BusyBox-compatible)
-install_service() {
+# Install Rinkhals app (for Anycubic Kobra S1 with Rinkhals firmware)
+install_rinkhals_app() {
     INSTALL_DIR="$1"
     PRINTER_DATA="$2"
 
-    print_info "Installing service..."
+    print_info "Installing as Rinkhals app..."
+
+    # Find the current Rinkhals version directory
+    RINKHALS_CURRENT=$(readlink -f /useremain/rinkhals/.current 2>/dev/null)
+    if [ -z "$RINKHALS_CURRENT" ]; then
+        RINKHALS_CURRENT=$(ls -d /useremain/rinkhals/20* 2>/dev/null | tail -1)
+    fi
+
+    if [ -z "$RINKHALS_CURRENT" ]; then
+        print_error "Could not find Rinkhals installation directory"
+        return 1
+    fi
+
+    RINKHALS_APPS="$RINKHALS_CURRENT/home/rinkhals/apps"
+    APP_DIR="$RINKHALS_APPS/60-polar-cloud"
+
+    print_info "Rinkhals apps directory: $RINKHALS_APPS"
+
+    # Create the app directory
+    mkdir -p "$APP_DIR"
+
+    # Create app.json
+    cat > "$APP_DIR/app.json" << 'EOF'
+{
+    "$version": "1",
+    "name": "Polar Cloud",
+    "description": "Connect your printer to Polar Cloud for remote monitoring and control.",
+    "version": "1.0.0"
+}
+EOF
+    print_success "Created app.json"
+
+    # Create app.sh
+    cat > "$APP_DIR/app.sh" << EOF
+. /useremain/rinkhals/.current/tools.sh
+
+APP_ROOT=\$(dirname \$(realpath \$0))
+POLAR_DIR="$INSTALL_DIR"
+PIDFILE="/var/run/polar_cloud.pid"
+LOGFILE="$PRINTER_DATA/logs/polar_cloud.log"
+
+export PYTHONPATH="\$POLAR_DIR/lib:\$PYTHONPATH"
+export LD_LIBRARY_PATH="/ac_lib/lib/third_lib:\$LD_LIBRARY_PATH"
+
+status() {
+    if [ -f "\$PIDFILE" ]; then
+        PID=\$(cat "\$PIDFILE")
+        if kill -0 "\$PID" 2>/dev/null; then
+            report_status \$APP_STATUS_STARTED "\$PID"
+            return
+        fi
+        rm -f "\$PIDFILE"
+    fi
+    report_status \$APP_STATUS_STOPPED
+}
+
+start() {
+    # Check if already running
+    if [ -f "\$PIDFILE" ]; then
+        PID=\$(cat "\$PIDFILE")
+        if kill -0 "\$PID" 2>/dev/null; then
+            log "Polar Cloud already running (PID: \$PID)"
+            return 0
+        fi
+        rm -f "\$PIDFILE"
+    fi
+
+    log "Starting Polar Cloud..."
+
+    if [ ! -d "\$POLAR_DIR" ]; then
+        log "Polar Cloud not installed at \$POLAR_DIR"
+        return 1
+    fi
+
+    cd "\$POLAR_DIR"
+    nohup python3 "\$POLAR_DIR/src/polar_cloud.py" >> "\$LOGFILE" 2>&1 &
+    PID=\$!
+    echo \$PID > "\$PIDFILE"
+    log "Polar Cloud started (PID: \$PID)"
+}
+
+stop() {
+    log "Stopping Polar Cloud..."
+    if [ -f "\$PIDFILE" ]; then
+        PID=\$(cat "\$PIDFILE")
+        kill "\$PID" 2>/dev/null
+        rm -f "\$PIDFILE"
+    fi
+    log "Polar Cloud stopped"
+}
+
+case "\$1" in
+    status) status ;;
+    start)  start ;;
+    stop)   stop ;;
+    *)      echo "Usage: \$0 {status|start|stop}" ;;
+esac
+EOF
+    chmod +x "$APP_DIR/app.sh"
+    print_success "Created app.sh"
+
+    # Enable the app
+    touch "$APP_DIR/.enabled"
+    print_success "Enabled Polar Cloud app"
+
+    # Also create a convenience script in the install directory
+    SERVICE_SCRIPT="$INSTALL_DIR/polar_cloud_service.sh"
+    cat > "$SERVICE_SCRIPT" << EOF
+#!/bin/sh
+# Convenience wrapper for Rinkhals app
+$APP_DIR/app.sh \$1
+EOF
+    chmod +x "$SERVICE_SCRIPT"
+
+    print_info "Starting Polar Cloud via Rinkhals app..."
+    "$APP_DIR/app.sh" start
+}
+
+# Install service for non-Rinkhals systems (Creality K1, etc.)
+install_init_service() {
+    INSTALL_DIR="$1"
+    PRINTER_DATA="$2"
+
+    print_info "Installing init.d service..."
 
     # Create service script
     SERVICE_SCRIPT="$INSTALL_DIR/polar_cloud_service.sh"
@@ -339,8 +498,8 @@ EOF
     chmod +x "$SERVICE_SCRIPT"
     print_success "Created service script: $SERVICE_SCRIPT"
 
-    # Try to install init script if possible
-    if [ -d "/etc/init.d" ]; then
+    # Try to install init script if /etc/init.d exists and is writable
+    if [ -d "/etc/init.d" ] && [ -w "/etc/init.d" ]; then
         INIT_SCRIPT="/etc/init.d/S99polar_cloud"
         cat > "$INIT_SCRIPT" << EOF
 #!/bin/sh
@@ -349,10 +508,29 @@ $SERVICE_SCRIPT \$1
 EOF
         chmod +x "$INIT_SCRIPT"
         print_success "Created init script: $INIT_SCRIPT"
+    else
+        print_warning "Could not create init script - service won't auto-start on boot"
+        print_info "You may need to add $SERVICE_SCRIPT to your startup scripts manually"
     fi
 
     print_info "Starting Polar Cloud service..."
     "$SERVICE_SCRIPT" start
+}
+
+# Install service (platform-specific)
+install_service() {
+    INSTALL_DIR="$1"
+    PRINTER_DATA="$2"
+
+    print_info "Installing service..."
+
+    if is_rinkhals; then
+        # Rinkhals uses its own app framework for startup
+        install_rinkhals_app "$INSTALL_DIR" "$PRINTER_DATA"
+    else
+        # Other embedded systems use init.d
+        install_init_service "$INSTALL_DIR" "$PRINTER_DATA"
+    fi
 }
 
 # Main installation flow
