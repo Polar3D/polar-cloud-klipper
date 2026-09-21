@@ -267,6 +267,23 @@
             display: block;
         }
 
+        .problems {
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            background: rgba(255, 152, 0, 0.15);
+            border: 1px solid rgba(255, 152, 0, 0.5);
+            color: #ffb74d;
+        }
+
+        .problems ul {
+            margin: 8px 0 0 20px;
+        }
+
+        .problems li + li {
+            margin-top: 6px;
+        }
+
         .navigation {
             text-align: center;
             margin-bottom: 20px;
@@ -320,6 +337,11 @@
         <div class="header">
             <h1>☁️ Polar Cloud</h1>
             <p>Connect your 3D printer to Polar Cloud for remote monitoring</p>
+        </div>
+
+        <div class="problems" id="problems" style="display: none;">
+            <strong>⚠️ This printer is offline on Polar Cloud</strong>
+            <ul id="problems-list"></ul>
         </div>
 
         <div class="status-section">
@@ -447,7 +469,9 @@
         // forwards `{method, arguments}` to the agent's WebSocket and awaits
         // the agent's JSON-RPC response.
         async function callRemoteMethod(method, params = {}) {
-            const response = await fetch(JSONRPC_URL, {
+            let response;
+            try {
+                response = await fetch(JSONRPC_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -460,13 +484,39 @@
                     },
                     id: Date.now()
                 })
-            });
+                });
+            } catch (e) {
+                throw moonrakerDownError();
+            }
+
+            // nginx answers 502/503/504 when Moonraker isn't running
+            if (response.status >= 502 && response.status <= 504) {
+                throw moonrakerDownError();
+            }
 
             const data = await response.json();
             if (data.error) {
                 throw new Error(data.error.message || JSON.stringify(data.error));
             }
             return data.result;
+        }
+
+        function moonrakerDownError() {
+            const err = new Error('Moonraker is not responding');
+            err.moonrakerDown = true;
+            return err;
+        }
+
+        function showProblems(messages) {
+            const box = document.getElementById('problems');
+            const list = document.getElementById('problems-list');
+            list.innerHTML = '';
+            for (const text of messages) {
+                const li = document.createElement('li');
+                li.textContent = text;
+                list.appendChild(li);
+            }
+            box.style.display = messages.length ? 'block' : 'none';
         }
 
         // State
@@ -588,10 +638,19 @@
 
                 currentStatus = result;
                 updateUI();
+                showProblems((result.problems || []).map(p => p.message));
 
             } catch (error) {
                 console.error('Error loading status:', error);
                 showMessage('Failed to load status: ' + error.message, 'error');
+
+                if (error.moonrakerDown) {
+                    showProblems(['Moonraker is not responding, so Polar Cloud cannot see or control ' +
+                        'the printer. Check moonraker.log; after a firmware update, moonraker.conf may be missing.']);
+                } else if (/not connected/i.test(error.message)) {
+                    showProblems(['The Polar Cloud service is not running or has not connected to ' +
+                        'Moonraker yet. Restart the Polar Cloud service, then check polar_cloud.log.']);
+                }
 
                 // Set error state
                 serviceStatus.textContent = 'Error';
