@@ -7,6 +7,7 @@ This version uses the synchronous Socket.IO client for maximum compatibility,
 including Creality K1/K1C/K1 Max which cannot install aiohttp.
 """
 
+import glob
 import json
 import logging
 import logging.handlers
@@ -77,6 +78,41 @@ def get_printer_data_path():
 
 PRINTER_DATA_PATH = get_printer_data_path()
 
+# Stock Creality K1-series firmware records the printer model here
+# (device_info.model_str, e.g. "K1C").
+CREALITY_SYSTEM_CONFIG = '/usr/data/creality/userdata/config/system_config.json'
+
+# Creality model_str (normalized: upper case, no spaces/dashes/underscores)
+# -> Polar Cloud printer make name. Names must match the server's
+# printerMakes list (https://polar3d.com/api/v1/printer_makes).
+CREALITY_PRINTER_MAKES = {
+    'K1': 'Creality K1',
+    'K1C': 'Creality K1C',
+    'K1MAX': 'Creality K1 Max',
+    'K1SE': 'Creality K1 SE',
+}
+
+# Creality K1-series camera stack (see PolarCloudService.ensure_mjpg_stream).
+MJPG_STREAMER = '/usr/bin/mjpg_streamer'
+MJPG_MEMFD_PLUGIN = '/usr/lib/mjpg-streamer/input_memfd.so'
+MJPG_WWW = '/usr/share/mjpg-streamer/www'
+MJPG_PORT = 8080
+
+# printer_type values that mean "not chosen yet" (the config template default),
+# which auto-detection is allowed to replace.
+PLACEHOLDER_PRINTER_TYPES = ('', 'cartesian')
+
+
+def detect_printer_make():
+    """Return the Polar Cloud make name for this printer, or None if unknown."""
+    try:
+        with open(CREALITY_SYSTEM_CONFIG) as f:
+            model_str = json.load(f).get('device_info', {}).get('model_str') or ''
+    except (OSError, ValueError, AttributeError):
+        return None
+    key = ''.join(c for c in model_str.upper() if c.isalnum())
+    return CREALITY_PRINTER_MAKES.get(key)
+
 
 # --- Patch: Set logging level based on config verbose flag ---
 def get_verbose_flag(config_file=None):
@@ -139,8 +175,18 @@ class MoonrakerConnection:
         self.connected = False
         self.klippy_ready = threading.Event()
         self.shutdown = False
+        self._stop_event = threading.Event()
         self.reconnect_delay = 1
         self.max_reconnect_delay = 30
+
+        # Outage tracking. While Moonraker stays unreachable, per-attempt
+        # errors are logged at debug level and a summary is logged every
+        # outage_log_interval seconds, so a long outage can't flood the log.
+        self.down_since = time.time()  # None while connected
+        self._opened = False           # current attempt reached _on_open
+        self.failed_attempts = 0
+        self._last_outage_log = 0.0
+        self.outage_log_interval = 600
 
         # Cached printer state from subscriptions
         self.printer_state = {}
@@ -153,6 +199,7 @@ class MoonrakerConnection:
             return False
 
         self.shutdown = False
+        self._stop_event.clear()
         self.ws_thread = threading.Thread(target=self._connection_loop, daemon=True)
         self.ws_thread.start()
         return True
@@ -160,6 +207,7 @@ class MoonrakerConnection:
     def stop(self):
         """Stop the WebSocket connection."""
         self.shutdown = True
+        self._stop_event.set()
         self.klippy_ready.clear()
         if self.ws:
             try:
@@ -172,19 +220,54 @@ class MoonrakerConnection:
     def _connection_loop(self):
         """Main connection loop with automatic reconnection."""
         while not self.shutdown:
+            self._opened = False
             try:
                 self._connect()
             except Exception as e:
-                logger.error(f"Moonraker WebSocket error: {e}")
+                self._log_attempt(logging.ERROR, f"Moonraker WebSocket error: {e}")
 
-            if not self.shutdown:
-                logger.info(f"Reconnecting to Moonraker in {self.reconnect_delay}s...")
-                time.sleep(self.reconnect_delay)
-                self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
+            if self.shutdown:
+                break
+
+            if self._opened:
+                self.failed_attempts = 0
+            else:
+                self.failed_attempts += 1
+                self._log_outage()
+
+            self._log_attempt(logging.INFO, f"Reconnecting to Moonraker in {self.reconnect_delay}s...")
+            self._stop_event.wait(self.reconnect_delay)
+            self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
+
+    def _in_outage(self):
+        """True once an attempt has failed without connecting."""
+        return self.failed_attempts > 0
+
+    def _log_attempt(self, level, msg):
+        """Log a per-attempt message, demoted to debug during an outage."""
+        logger.log(logging.DEBUG if self._in_outage() else level, msg)
+
+    def _log_outage(self):
+        """Log the start of an outage, then a periodic summary while it lasts."""
+        now = time.time()
+        down_for = int(now - (self.down_since or now))
+        if self.failed_attempts == 1:
+            self._last_outage_log = now
+            logger.warning(
+                f"Cannot reach Moonraker at {self.moonraker_url}; retrying every "
+                f"{self.max_reconnect_delay}s. Polar Cloud cannot see or control the "
+                "printer until Moonraker is running (check moonraker.log)."
+            )
+        elif now - self._last_outage_log >= self.outage_log_interval:
+            self._last_outage_log = now
+            logger.warning(
+                f"Moonraker still unreachable after {self.failed_attempts} attempts "
+                f"({down_for // 60} min)"
+            )
 
     def _connect(self):
         """Establish WebSocket connection to Moonraker."""
-        logger.info(f"Connecting to Moonraker WebSocket at {self.ws_url}")
+        self._log_attempt(logging.INFO, f"Connecting to Moonraker WebSocket at {self.ws_url}")
 
         self.ws = websocket.WebSocketApp(
             self.ws_url,
@@ -199,8 +282,15 @@ class MoonrakerConnection:
 
     def _on_open(self, ws):
         """Handle WebSocket connection opened."""
+        if self._in_outage():
+            down_for = int(time.time() - (self.down_since or time.time()))
+            logger.info(f"Moonraker reachable again after {down_for // 60} min "
+                        f"({self.failed_attempts} failed attempts)")
         logger.info("Moonraker WebSocket connected")
+        self._opened = True
         self.connected = True
+        self.down_since = None
+        self.failed_attempts = 0
         self.reconnect_delay = 1  # Reset reconnect delay on successful connection
 
         # Start message sender thread
@@ -325,14 +415,19 @@ class MoonrakerConnection:
 
     def _on_error(self, ws, error):
         """Handle WebSocket error."""
-        logger.error(f"Moonraker WebSocket error: {error}")
-        self.connected = False
+        self._log_attempt(logging.ERROR, f"Moonraker WebSocket error: {error}")
+        self._mark_down()
 
     def _on_close(self, ws, close_status_code, close_msg):
         """Handle WebSocket connection closed."""
-        logger.warning(f"Moonraker WebSocket closed: {close_status_code} - {close_msg}")
-        self.connected = False
+        self._log_attempt(logging.WARNING, f"Moonraker WebSocket closed: {close_status_code} - {close_msg}")
+        self._mark_down()
         self.klippy_ready.clear()
+
+    def _mark_down(self):
+        self.connected = False
+        if self.down_since is None:
+            self.down_since = time.time()
 
     def _message_sender_loop(self):
         """Send queued messages to Moonraker."""
@@ -562,6 +657,7 @@ class PolarCloudService:
         # Image upload functionality
         self.upload_urls = {}
         self.upload_url_received_time = {}
+        self.upload_url_job_id = {}  # Track which job_id each upload URL was requested for
         self.last_image_upload = {}
         self.image_upload_intervals = {
             'idle': 60,
@@ -594,6 +690,12 @@ class PolarCloudService:
         # Error tracking
         self.last_error = None
         self.last_error_time = None
+        self._cloud_down_since = time.time()  # None while connected to Polar Cloud
+        self._last_status_file_write = 0.0
+        self._last_stream_check = 0.0
+        self._warned_no_resizer = False
+        # Set on shutdown; loops wait on it instead of sleeping so they exit at once.
+        self._stop_event = threading.Event()
 
         # Auto-reset tracking for stuck cancelled/complete states
         self._stuck_state_detected_time = None
@@ -700,7 +802,8 @@ class PolarCloudService:
                     "latest_version": self.latest_version
                 },
                 "last_error": self.last_error,
-                "last_error_time": self.last_error_time
+                "last_error_time": self.last_error_time,
+                "problems": self.get_problems()
             }
         except Exception as e:
             logger.error(f"Error handling status extension method: {e}")
@@ -883,6 +986,7 @@ class PolarCloudService:
         def connect():
             logger.info("Connected to Polar Cloud Socket.IO server")
             self.connected = True
+            self._cloud_down_since = None
             self.hello_sent = False
             self.authenticated = False
             # Arm the handshake watchdog: welcome -> hello -> helloResponse must
@@ -896,6 +1000,8 @@ class PolarCloudService:
         def disconnect():
             logger.warning("Disconnected from Polar Cloud Socket.IO server")
             self.connected = False
+            if self._cloud_down_since is None:
+                self._cloud_down_since = time.time()
             self.hello_sent = False
             self.authenticated = False
             self._auth_deadline = None
@@ -905,6 +1011,8 @@ class PolarCloudService:
         def connect_error(data):
             logger.error(f"Socket.IO connection error: {data}")
             self.connected = False
+            if self._cloud_down_since is None:
+                self._cloud_down_since = time.time()
             self.authenticated = False
             self._auth_deadline = None
             self.write_status_file(error=f"Connection error: {data}")
@@ -950,8 +1058,9 @@ class PolarCloudService:
                     self.send_hello()
                 else:
                     if not username and not pin:
-                        logger.error("No username or PIN configured in polar_cloud.conf")
-                        logger.error(f"Please check configuration file: {self.config_file}")
+                        logger.error("Not registered with Polar Cloud: no username or PIN configured. "
+                                     "Open /polar-cloud/ on this printer's Mainsail/Fluidd address "
+                                     f"to register, or set them in {self.config_file}")
                     elif not username:
                         logger.error("Username missing in polar_cloud.conf")
                     elif not pin:
@@ -1179,6 +1288,7 @@ class PolarCloudService:
                     return
 
                 logger.debug("Config loaded successfully")
+                self._apply_detected_printer_make()
             else:
                 logger.info(f"Config file not found, creating default: {self.config_file}")
                 self.config['polar_cloud'] = {
@@ -1192,9 +1302,30 @@ class PolarCloudService:
                     'max_image_size': '150000',
                     'webcam_enabled': 'true'
                 }
+                self._apply_detected_printer_make()
                 self.save_config()
         except Exception as e:
             logger.error(f"Error loading config: {e}")
+
+    def _apply_detected_printer_make(self):
+        """Fill in printer_type from the printer's own model info.
+
+        Installers write a generic template (printer_type = Cartesian), so a
+        known printer such as a Creality K1C would otherwise report a generic
+        make to Polar Cloud. A value the user chose is never overwritten.
+        """
+        current = self.config.get('polar_cloud', 'printer_type', fallback='').strip()
+        if current.lower() not in PLACEHOLDER_PRINTER_TYPES:
+            return
+        make = detect_printer_make()
+        if not make:
+            return
+        self.config['polar_cloud']['printer_type'] = make
+        logger.info(f"Detected printer make: {make}")
+        try:
+            self.save_config()
+        except OSError as e:
+            logger.warning(f"Could not save detected printer make: {e}")
 
     def save_config(self):
         """Save configuration to file"""
@@ -1236,9 +1367,54 @@ class PolarCloudService:
         except Exception as e:
             logger.debug(f"Could not check for active cloud job: {e}")
 
+    def get_problems(self):
+        """Return the ongoing conditions that keep this printer offline.
+
+        Each entry is {"code", "message", "since"} with a message a user can
+        act on. Brief blips are ignored; only conditions lasting longer than
+        a minute (or configuration gaps) are reported.
+        """
+        problems = []
+        now = time.time()
+
+        def since(ts):
+            return datetime.fromtimestamp(ts).isoformat() if ts else None
+
+        conn = self.moonraker_conn
+        if conn and conn.down_since is not None and now - conn.down_since > 60:
+            problems.append({
+                "code": "moonraker_unreachable",
+                "message": "Moonraker is not responding, so Polar Cloud cannot see or "
+                           "control the printer. Check moonraker.log; after a firmware "
+                           "update, moonraker.conf may be missing.",
+                "since": since(conn.down_since),
+            })
+
+        if not self.serial_number:
+            username = self.config.get('polar_cloud', 'username', fallback='').strip()
+            pin = self.config.get('polar_cloud', 'pin', fallback='').strip()
+            if not username or not pin:
+                problems.append({
+                    "code": "not_registered",
+                    "message": "This printer is not registered with Polar Cloud. "
+                               "Enter your Polar Cloud email and PIN to register.",
+                    "since": None,
+                })
+
+        if self._cloud_down_since is not None and now - self._cloud_down_since > 60:
+            problems.append({
+                "code": "cloud_unreachable",
+                "message": "Cannot connect to the Polar Cloud server. Check the "
+                           "printer's internet connection.",
+                "since": since(self._cloud_down_since),
+            })
+
+        return problems
+
     def write_status_file(self, error=None):
         """Write current status to file for Moonraker plugin"""
         try:
+            self._last_status_file_write = time.time()
             if error:
                 self.last_error = error
                 self.last_error_time = datetime.now().isoformat()
@@ -1255,7 +1431,8 @@ class PolarCloudService:
                 "challenge": self.challenge or "",
                 "webcam_enabled": self.config.get('polar_cloud', 'webcam_enabled', fallback='true').lower() == 'true',
                 "last_error": self.last_error,
-                "last_error_time": self.last_error_time
+                "last_error_time": self.last_error_time,
+                "problems": self.get_problems()
             }
 
             with open(self.status_file, 'w') as f:
@@ -1377,7 +1554,20 @@ class PolarCloudService:
                     return version
 
         except Exception as e:
-            logger.warning(f"Error getting version from git: {e}")
+            logger.debug(f"Could not get version from git: {e}")
+
+        # Tarball installs (no git, e.g. install_embedded.sh) record the
+        # installed release in a VERSION file.
+        try:
+            version_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'VERSION')
+            with open(version_file) as f:
+                version = f.read().strip()
+            if version:
+                version = version[1:] if version.startswith('v') else version
+                logger.info(f"Detected version from VERSION file: {version}")
+                return version
+        except OSError:
+            pass
 
         fallback_version = "1.0.0-unknown"
         logger.warning(f"Could not determine version, using fallback: {fallback_version}")
@@ -1462,7 +1652,10 @@ class PolarCloudService:
             if response.status_code == 200:
                 return response.json()
         except Exception as e:
-            logger.error(f"Error getting Moonraker data from {endpoint}: {e}")
+            # The WebSocket connection already reports ongoing outages.
+            in_outage = self.moonraker_conn and self.moonraker_conn.down_since is not None
+            level = logging.DEBUG if in_outage else logging.ERROR
+            logger.log(level, f"Error getting Moonraker data from {endpoint}: {e}")
         return None
 
     def _get_cached_moonraker_data(self, endpoint):
@@ -1577,7 +1770,18 @@ class PolarCloudService:
                 elif 'virtual_sdcard' in result_data:
                     vsd = result_data['virtual_sdcard']
 
-            if self.job_is_preparing and self.is_printing_cloud_job and self.current_job_id:
+            conn = self.moonraker_conn
+            moonraker_down = (conn.down_since is not None) if conn else print_stats is None
+
+            if moonraker_down:
+                # Klipper keeps printing without Moonraker, so this is a lost
+                # link, not a failed job. Report Disconnected (13), which
+                # monitor_print_completion does not treat as a terminal state;
+                # Error (12) would cancel an in-progress cloud job.
+                status = self.PSTATE_OFFLINE
+                progress = "Disconnected"
+                progress_detail = "Moonraker is not responding"
+            elif self.job_is_preparing and self.is_printing_cloud_job and self.current_job_id:
                 status = self.PSTATE_PREPARING
                 progress = "Preparing to print a job"
                 progress_detail = f"Downloading file for job: {self.current_job_id}"
@@ -1625,15 +1829,9 @@ class PolarCloudService:
                     # Calculate progress from file position (more accurate than duration)
                     if file_size > 0:
                         progress_pct = (file_position / file_size) * 100
-                        if self.current_job_id:
-                            progress_detail = f"Printing Job: {self.current_job_id} Percent Complete: {progress_pct:.1f}%"
-                        else:
-                            progress_detail = f"Printing Job: {filename.split('/')[-1] if filename else 'Unknown'} Percent Complete: {progress_pct:.1f}%"
+                        progress_detail = f"Printing: {progress_pct:.1f}%"
                     else:
-                        if self.current_job_id:
-                            progress_detail = f"Printing Job: {self.current_job_id}"
-                        else:
-                            progress_detail = f"Printing Job: {filename.split('/')[-1] if filename else 'Unknown'}"
+                        progress_detail = "Printing"
 
                 elif state == 'paused':
                     status = self.PSTATE_PAUSED
@@ -1657,10 +1855,7 @@ class PolarCloudService:
                     # Calculate progress from file position (more accurate than duration)
                     if file_size > 0:
                         progress_pct = (file_position / file_size) * 100
-                        if self.current_job_id:
-                            progress_detail = f"Printing Job: {self.current_job_id} Percent Complete: {progress_pct:.1f}%"
-                        else:
-                            progress_detail = f"Printing Job: {filename.split('/')[-1] if filename else 'Unknown'} Percent Complete: {progress_pct:.1f}%"
+                        progress_detail = f"Paused: {progress_pct:.1f}%"
 
                 elif state == 'complete':
                     if self.is_printing_cloud_job and self.current_job_id:
@@ -1686,10 +1881,7 @@ class PolarCloudService:
                     if stats.get('print_start_time'):
                         start_time = datetime.fromtimestamp(stats['print_start_time']).isoformat() + 'Z'
 
-                    if self.current_job_id:
-                        progress_detail = f"Printing Job: {self.current_job_id} Percent Complete: 100.0%"
-                    else:
-                        progress_detail = f"Printing Job: {filename.split('/')[-1] if filename else 'Unknown'} Percent Complete: 100.0%"
+                    progress_detail = "Complete: 100.0%"
 
                 elif state == 'error':
                     status = self.PSTATE_ERROR
@@ -1776,11 +1968,13 @@ class PolarCloudService:
 
         except Exception as e:
             logger.error(f"Error getting printer status: {e}")
+            # Not PSTATE_ERROR: monitor_print_completion treats that as terminal
+            # and would cancel a cloud job over a transient failure here.
             return {
                 "serialNumber": self.serial_number or "",
-                "status": self.PSTATE_ERROR,
-                "progress": "Error",
-                "progressDetail": "Error",
+                "status": self.PSTATE_OFFLINE,
+                "progress": "Disconnected",
+                "progressDetail": "Could not read printer status",
                 "estimatedTime": "0",
                 "printSeconds": 0,
                 "tool0": 0.0,
@@ -1789,8 +1983,62 @@ class PolarCloudService:
                 "targetTool0": 0
             }
 
+    def ensure_mjpg_stream(self):
+        """Start the camera's MJPEG stream on port 8080 if firmware no longer does.
+
+        Creality K1-series firmware runs cam_app for the camera, which shares
+        frames over memfd. Older firmware also started mjpg_streamer on 8080
+        (the port Mainsail's /webcam/ and our snapshots use); 1.3.5.x only
+        streams over WebRTC. Rather than keying on firmware versions, check
+        what's actually there: if the camera is up and nothing serves 8080,
+        start mjpg_streamer the way Creality's /usr/bin/auto_uvc.sh did,
+        using its pidfile name so a firmware that starts its own won't add a
+        second copy. Setting manage_webcam_stream = false turns this off.
+        """
+        if self.config.get('polar_cloud', 'manage_webcam_stream', fallback='true').strip().lower() \
+                in ('false', 'no', 'off', '0'):
+            return
+        now = time.time()
+        if now - self._last_stream_check < 300:
+            return
+        self._last_stream_check = now
+
+        if not (os.path.isfile(MJPG_STREAMER) and os.path.isfile(MJPG_MEMFD_PLUGIN)):
+            return
+        devices = sorted(glob.glob('/dev/v4l/by-id/main-video-*'))
+        if not devices:
+            return
+        try:
+            if subprocess.run(['pidof', 'cam_app'], capture_output=True).returncode != 0:
+                return
+        except OSError:
+            return
+        try:
+            with socket.create_connection(('127.0.0.1', MJPG_PORT), timeout=2):
+                return  # something already serves the stream
+        except OSError:
+            pass
+
+        pidfile = f"/var/run/{os.path.basename(devices[0])}_mjpg.pid"
+        output = f"output_http.so -p {MJPG_PORT}"
+        if os.path.isdir(MJPG_WWW):
+            output = f"output_http.so -w {MJPG_WWW} -p {MJPG_PORT}"
+        env = dict(os.environ, LD_LIBRARY_PATH=os.path.dirname(MJPG_MEMFD_PLUGIN))
+        try:
+            result = subprocess.run(
+                ['start-stop-daemon', '-S', '-b', '-m', '-p', pidfile,
+                 '--exec', MJPG_STREAMER, '--', '-i', 'input_memfd.so -t 0', '-o', output],
+                env=env, capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                logger.info(f"Started mjpg_streamer on port {MJPG_PORT} for the printer camera")
+            else:
+                logger.warning(f"Could not start mjpg_streamer: {result.stdout or result.stderr}".strip())
+        except (OSError, subprocess.SubprocessError) as e:
+            logger.warning(f"Could not start mjpg_streamer: {e}")
+
     def capture_webcam_image(self):
         """Capture image from webcam"""
+        self.ensure_mjpg_stream()
         try:
             # Get max image size from config
             max_size = int(self.config.get('polar_cloud', 'max_image_size', fallback='150000'))
@@ -1814,8 +2062,6 @@ class PolarCloudService:
             # Fallback to standard snapshot (may be too large without PIL)
             response = requests.get("http://localhost:8080/?action=snapshot", timeout=10)
             if response.status_code == 200:
-                if len(response.content) > max_size and not HAS_PIL:
-                    logger.warning(f"Webcam image ({len(response.content)} bytes) exceeds max size ({max_size}). PIL not available for resizing.")
                 return response.content
 
             logger.debug("No webcam available for snapshot")
@@ -1916,7 +2162,10 @@ class PolarCloudService:
             self._ffmpeg_cache = {'cmd': ffmpeg_cmd, 'env': ffmpeg_env}
 
         if not ffmpeg_cmd:
-            logger.debug("ffmpeg not found, cannot resize image")
+            if not self._warned_no_resizer:
+                self._warned_no_resizer = True
+                logger.warning(f"Neither PIL nor ffmpeg is available, so webcam images larger than "
+                               f"{max_size} bytes are uploaded without resizing")
             return image_data
 
         try:
@@ -1992,13 +2241,22 @@ class PolarCloudService:
         if not max_size:
             max_size = int(self.config.get('polar_cloud', 'max_image_size', fallback='150000'))
 
-        # If image is already small enough, return as-is
-        if len(image_data) <= max_size:
+        # Get webcam transform settings
+        webcam_settings = self.get_webcam_settings()
+        flip_horizontal = webcam_settings['flip_horizontal']
+        flip_vertical = webcam_settings['flip_vertical']
+        rotation = webcam_settings['rotation']
+        needs_transform = flip_horizontal or flip_vertical or rotation
+
+        # If image is already small enough and no transforms needed, return as-is
+        if len(image_data) <= max_size and not needs_transform:
             return image_data
 
         # Try PIL first if available
         if not HAS_PIL:
-            # Fall back to ffmpeg-based compression
+            # Fall back to ffmpeg-based compression (note: ffmpeg path doesn't apply transforms yet)
+            if needs_transform:
+                logger.warning("Image transforms required but PIL not available - image may be incorrectly oriented")
             return self.resize_image_ffmpeg(image_data, max_size)
 
         try:
@@ -2007,11 +2265,7 @@ class PolarCloudService:
             if image.mode != 'RGB':
                 image = image.convert('RGB')
 
-            webcam_settings = self.get_webcam_settings()
-            flip_horizontal = webcam_settings['flip_horizontal']
-            flip_vertical = webcam_settings['flip_vertical']
-            rotation = webcam_settings['rotation']
-
+            # Apply transforms
             if flip_horizontal:
                 image = image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
 
@@ -2093,21 +2347,6 @@ class PolarCloudService:
 
             url_data = self.upload_urls[upload_type]
 
-            if upload_type in self.upload_url_received_time and url_data.get('expires'):
-                received_time = self.upload_url_received_time[upload_type]
-                expires_in_seconds = url_data['expires']
-                time_since_received = time.time() - received_time
-
-                if time_since_received >= (expires_in_seconds - 30):
-                    logger.info(f"Upload URL for {upload_type} has expired, requesting new one")
-                    if self.request_upload_url(upload_type):
-                        time.sleep(1)
-                        url_data = self.upload_urls.get(upload_type)
-                        if not url_data:
-                            return False
-                    else:
-                        return False
-
             resized_image = self.resize_image(image_data)
 
             data = url_data.get('fields', {})
@@ -2119,7 +2358,7 @@ class PolarCloudService:
                 logger.info(f"Uploaded {upload_type} image ({len(resized_image)} bytes)")
                 return True
             else:
-                logger.error(f"Failed to upload image: {response.status_code} - {response.text}")
+                logger.error(f"Failed to upload image: {response.status_code} - {response.text[:300]}")
                 return False
 
         except Exception as e:
@@ -2149,30 +2388,64 @@ class PolarCloudService:
             last_upload = self.last_image_upload.get(upload_type, 0)
             if current_time - last_upload < interval:
                 return
+            # Count every attempt, not just successes: a failing capture or
+            # upload is retried once per interval instead of on every status
+            # loop pass, each of which re-captures and re-encodes the image.
+            self.last_image_upload[upload_type] = current_time
 
             image_data = self.capture_webcam_image()
             if not image_data:
                 logger.debug("No webcam image captured")
                 return
 
-            if upload_type not in self.upload_urls:
-                job_id = self.current_job_id if upload_type == "printing" else None
-                logger.info(f"Requesting upload URL for {upload_type}")
+            # For printing uploads, check if job_id has changed and request new URL if needed
+            job_id = self.current_job_id if upload_type == "printing" else None
+            cached_job_id = self.upload_url_job_id.get(upload_type)
+
+            # Request new URL if we don't have one, or if the job_id changed for printing uploads
+            need_new_url = upload_type not in self.upload_urls
+            if not need_new_url and self._upload_url_expired(upload_type):
+                # Fetch a fresh URL and wait for it below; posting with the
+                # expired one fails with S3 403 SignatureDoesNotMatch.
+                logger.info(f"Upload URL for {upload_type} has expired, requesting new one")
+                need_new_url = True
+            if upload_type == "printing" and cached_job_id != job_id:
+                need_new_url = True
+                if cached_job_id:
+                    logger.info(f"Job ID changed from {cached_job_id} to {job_id}, requesting new upload URL")
+
+            if need_new_url:
+                # Clear old URL if exists
+                if upload_type in self.upload_urls:
+                    del self.upload_urls[upload_type]
+                logger.info(f"Requesting upload URL for {upload_type}" + (f" (job_id={job_id})" if job_id else ""))
                 self.request_upload_url(upload_type, job_id)
                 # Wait for async response - check up to 5 seconds
                 for _ in range(10):
                     time.sleep(0.5)
                     if upload_type in self.upload_urls:
+                        # Track which job_id this URL is for
+                        self.upload_url_job_id[upload_type] = job_id
                         break
                 else:
                     logger.warning(f"Timeout waiting for upload URL for {upload_type}")
                     return
 
-            if self.upload_image_to_cloud(image_data, upload_type):
-                self.last_image_upload[upload_type] = current_time
+            self.upload_image_to_cloud(image_data, upload_type)
 
         except Exception as e:
             logger.error(f"Error handling image uploads: {e}")
+
+    def _upload_url_expired(self, upload_type):
+        """True if the cached upload URL expires within the next 30 seconds."""
+        expires = self.upload_urls.get(upload_type, {}).get('expires')
+        received = self.upload_url_received_time.get(upload_type)
+        if not expires or received is None:
+            return False
+        try:
+            return time.time() - received >= float(expires) - 30
+        except (TypeError, ValueError):
+            return False
 
     def get_public_key_pem(self):
         """Get the public key in PEM format, supporting both cryptography and rsa libraries."""
@@ -2431,19 +2704,25 @@ class PolarCloudService:
                     self.last_version_report = current_time
 
                 consecutive_errors = 0
-                time.sleep(self.status_interval)
+                self._stop_event.wait(self.status_interval)
             except Exception as e:
                 consecutive_errors += 1
                 backoff = min(consecutive_errors * 5, 60)
                 logger.error(f"Error in status loop (attempt {consecutive_errors}, retry in {backoff}s): {e}")
-                time.sleep(backoff)
+                self._stop_event.wait(backoff)
 
     def run(self):
         """Main service loop"""
         logger.info("Starting Polar Cloud Service")
+        self.ensure_mjpg_stream()
 
         while self.running:
             try:
+                # Refresh the status file even when no events fire (e.g. during
+                # a Moonraker outage) so it never reports days-old state.
+                if time.time() - self._last_status_file_write >= 60:
+                    self.write_status_file()
+
                 if not self.connected:
                     self.connect_socketio()
 
@@ -2451,17 +2730,20 @@ class PolarCloudService:
                     # Wait for events - the sync client handles this internally
                     # Just sleep and let handlers do their work
                     self._check_connection_health()
-                    time.sleep(1)
+                    self._stop_event.wait(1)
                 else:
-                    time.sleep(5)  # Wait before trying to connect
+                    self._stop_event.wait(5)  # Wait before trying to connect
 
             except Exception as e:
                 logger.error(f"Error in main loop: {e}")
-                time.sleep(5)
+                self._stop_event.wait(5)
 
     def stop(self):
-        """Stop the service"""
+        """Stop the service (safe to call more than once)"""
+        if self._stop_event.is_set():
+            return
         logger.info("Stopping Polar Cloud Service")
+        self._stop_event.set()
         self.running = False
         self.stop_status_loop()
 
@@ -2839,6 +3121,7 @@ class PolarCloudService:
             self.hello_sent = False
 
             self.upload_urls.clear()
+            self.upload_url_job_id.clear()
 
             logger.info("Printer reset to unregistered state")
 
@@ -2876,9 +3159,36 @@ class PolarCloudService:
 # Global flag for shutdown
 _shutdown_requested = False
 
+def sync_web_interface():
+    """Refresh the served copy of the web UI from the source file.
+
+    Installers copy src/polar_cloud_web.html to web/index.html once, and
+    updates only pull src/, so without this the served page would stay at
+    whatever version was first installed.
+    """
+    src_dir = os.path.dirname(os.path.abspath(__file__))
+    source = os.path.join(src_dir, 'polar_cloud_web.html')
+    target = os.path.join(os.path.dirname(src_dir), 'web', 'index.html')
+    if not (os.path.isfile(source) and os.path.isfile(target)):
+        return
+    try:
+        with open(source, 'rb') as f:
+            new = f.read()
+        with open(target, 'rb') as f:
+            if f.read() == new:
+                return
+        with open(target, 'wb') as f:
+            f.write(new)
+        logger.info("Updated web interface")
+    except OSError as e:
+        logger.warning(f"Could not update web interface: {e}")
+
+
 def main():
     """Main entry point"""
     global _shutdown_requested
+
+    sync_web_interface()
 
     # Create and run service
     service = PolarCloudService()

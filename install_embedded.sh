@@ -4,6 +4,9 @@
 # that don't have git or package managers available.
 #
 # Usage: curl -sSL https://raw.githubusercontent.com/Polar3D/polar-cloud-klipper/main/install_embedded.sh | sh
+#
+# Installs the latest release. To test a branch instead, set POLAR_CLOUD_BRANCH:
+#   POLAR_CLOUD_BRANCH=my-branch sh install_embedded.sh
 
 set -e
 
@@ -220,6 +223,45 @@ check_python_deps() {
 }
 
 # Download and install
+REPO="Polar3D/polar-cloud-klipper"
+
+# Download URL to a file with curl or wget; returns non-zero on failure
+fetch() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL -o "$2" "$1" 2>/dev/null
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -O "$2" "$1" 2>/dev/null
+    else
+        print_error "Neither curl nor wget available"
+        exit 1
+    fi
+}
+
+# Set DOWNLOAD_URL and VERSION: the latest release, or POLAR_CLOUD_BRANCH if set.
+# There's no git on these systems, so VERSION is written to a file the agent
+# reads to report its version.
+resolve_source() {
+    if [ -n "$POLAR_CLOUD_BRANCH" ]; then
+        DOWNLOAD_URL="https://github.com/$REPO/archive/refs/heads/$POLAR_CLOUD_BRANCH.tar.gz"
+        VERSION="dev-$POLAR_CLOUD_BRANCH"
+        return
+    fi
+    RELEASE_JSON="/tmp/polar-cloud-release.json"
+    TAG=""
+    if fetch "https://api.github.com/repos/$REPO/releases/latest" "$RELEASE_JSON"; then
+        TAG=$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' "$RELEASE_JSON" | head -1)
+    fi
+    rm -f "$RELEASE_JSON"
+    if [ -n "$TAG" ]; then
+        DOWNLOAD_URL="https://github.com/$REPO/archive/refs/tags/$TAG.tar.gz"
+        VERSION="$TAG"
+    else
+        print_warning "Could not look up the latest release; installing main"
+        DOWNLOAD_URL="https://github.com/$REPO/archive/refs/heads/main.tar.gz"
+        VERSION="dev-main"
+    fi
+}
+
 install_polar_cloud() {
     INSTALL_DIR=$(detect_install_dir)
     PRINTER_DATA=$(detect_printer_data_path)
@@ -235,30 +277,16 @@ install_polar_cloud() {
     # Create install directory
     mkdir -p "$INSTALL_DIR"
 
-    # Download from main branch
-    DOWNLOAD_URL="https://github.com/Polar3D/polar-cloud-klipper/archive/refs/heads/main.tar.gz"
+    resolve_source
     TARBALL="/tmp/polar-cloud-klipper.tar.gz"
 
-    print_info "Downloading Polar Cloud Klipper..."
+    print_info "Downloading Polar Cloud Klipper ($VERSION)..."
     rm -f "$TARBALL"
 
-    # Use curl with --fail to detect HTTP errors, and follow redirects
-    if command -v curl >/dev/null 2>&1; then
-        if curl -fsSL -o "$TARBALL" "$DOWNLOAD_URL" 2>/dev/null; then
-            print_success "Downloaded from GitHub"
-        else
-            print_error "Failed to download from GitHub"
-            exit 1
-        fi
-    elif command -v wget >/dev/null 2>&1; then
-        if wget -q -O "$TARBALL" "$DOWNLOAD_URL" 2>/dev/null; then
-            print_success "Downloaded from GitHub"
-        else
-            print_error "Failed to download from GitHub"
-            exit 1
-        fi
+    if fetch "$DOWNLOAD_URL" "$TARBALL"; then
+        print_success "Downloaded from GitHub"
     else
-        print_error "Neither curl nor wget available"
+        print_error "Failed to download $DOWNLOAD_URL"
         exit 1
     fi
 
@@ -272,6 +300,7 @@ install_polar_cloud() {
     print_info "Extracting files..."
     tar -xzf "$TARBALL" -C "$INSTALL_DIR" --strip-components=1
     rm -f "$TARBALL"
+    echo "$VERSION" > "$INSTALL_DIR/VERSION"
 
     print_success "Files extracted to $INSTALL_DIR"
 
@@ -349,7 +378,9 @@ EOF
 APP_ROOT=\$(dirname \$(realpath \$0))
 POLAR_DIR="$INSTALL_DIR"
 PIDFILE="/var/run/polar_cloud.pid"
-LOGFILE="$PRINTER_DATA/logs/polar_cloud.log"
+# polar_cloud.py writes and rotates polar_cloud.log itself; stdout/stderr go
+# to a separate file, truncated on each start.
+CONSOLE_LOG="$PRINTER_DATA/logs/polar_cloud_console.log"
 
 export PYTHONPATH="\$POLAR_DIR/lib:\$PYTHONPATH"
 export LD_LIBRARY_PATH="/ac_lib/lib/third_lib:\$LD_LIBRARY_PATH"
@@ -385,7 +416,7 @@ start() {
     fi
 
     cd "\$POLAR_DIR"
-    nohup python3 "\$POLAR_DIR/src/polar_cloud.py" >> "\$LOGFILE" 2>&1 &
+    nohup python3 "\$POLAR_DIR/src/polar_cloud.py" > "\$CONSOLE_LOG" 2>&1 &
     PID=\$!
     echo \$PID > "\$PIDFILE"
     log "Polar Cloud started (PID: \$PID)"
@@ -396,6 +427,10 @@ stop() {
     if [ -f "\$PIDFILE" ]; then
         PID=\$(cat "\$PIDFILE")
         kill "\$PID" 2>/dev/null
+        # Wait for exit so a restart never runs two agents at once
+        i=0
+        while kill -0 "\$PID" 2>/dev/null && [ \$i -lt 15 ]; do sleep 1; i=\$((i+1)); done
+        kill -9 "\$PID" 2>/dev/null
         rm -f "\$PIDFILE"
     fi
     log "Polar Cloud stopped"
@@ -424,7 +459,10 @@ $APP_DIR/app.sh \$1
 EOF
     chmod +x "$SERVICE_SCRIPT"
 
+    # Stop first so re-running the installer (an upgrade) loads the new code
     print_info "Starting Polar Cloud via Rinkhals app..."
+    "$APP_DIR/app.sh" stop
+    sleep 2
     "$APP_DIR/app.sh" start
 }
 
@@ -443,7 +481,9 @@ install_init_service() {
 
 POLAR_DIR="$INSTALL_DIR"
 PIDFILE="/var/run/polar_cloud.pid"
-LOGFILE="$PRINTER_DATA/logs/polar_cloud.log"
+# polar_cloud.py writes and rotates polar_cloud.log itself; stdout/stderr go
+# to a separate file, truncated on each start.
+CONSOLE_LOG="$PRINTER_DATA/logs/polar_cloud_console.log"
 PYTHON_CMD="$PYTHON_CMD"
 
 start() {
@@ -453,7 +493,7 @@ start() {
     fi
     echo "Starting Polar Cloud..."
     cd "\$POLAR_DIR"
-    nohup \$PYTHON_CMD "\$POLAR_DIR/src/polar_cloud.py" >> "\$LOGFILE" 2>&1 &
+    nohup \$PYTHON_CMD "\$POLAR_DIR/src/polar_cloud.py" > "\$CONSOLE_LOG" 2>&1 &
     echo \$! > "\$PIDFILE"
     echo "Polar Cloud started (PID: \$(cat \$PIDFILE))"
 }
@@ -461,7 +501,12 @@ start() {
 stop() {
     if [ -f "\$PIDFILE" ]; then
         echo "Stopping Polar Cloud..."
-        kill \$(cat "\$PIDFILE") 2>/dev/null
+        PID=\$(cat "\$PIDFILE")
+        kill "\$PID" 2>/dev/null
+        # Wait for exit so a restart never runs two agents at once
+        i=0
+        while kill -0 "\$PID" 2>/dev/null && [ \$i -lt 15 ]; do sleep 1; i=\$((i+1)); done
+        kill -9 "\$PID" 2>/dev/null
         rm -f "\$PIDFILE"
         echo "Polar Cloud stopped"
     else
@@ -513,8 +558,9 @@ EOF
         print_info "You may need to add $SERVICE_SCRIPT to your startup scripts manually"
     fi
 
+    # Restart so re-running the installer (an upgrade) loads the new code
     print_info "Starting Polar Cloud service..."
-    "$SERVICE_SCRIPT" start
+    "$SERVICE_SCRIPT" restart
 }
 
 # Install service (platform-specific)

@@ -367,7 +367,10 @@ install_service() {
 
 POLAR_DIR="$INSTALL_DIR"
 PIDFILE="/var/run/polar_cloud.pid"
-LOGFILE="$PRINTER_DATA_DIR/logs/polar_cloud.log"
+# polar_cloud.py writes and rotates polar_cloud.log itself. stdout/stderr
+# (e.g. crash tracebacks) go to a separate file, truncated on each start;
+# appending them to polar_cloud.log would keep writing to the rotated file.
+CONSOLE_LOG="$PRINTER_DATA_DIR/logs/polar_cloud_console.log"
 
 start() {
     if [ -f "\$PIDFILE" ] && kill -0 \$(cat "\$PIDFILE") 2>/dev/null; then
@@ -376,7 +379,7 @@ start() {
     fi
     echo "Starting Polar Cloud..."
     cd "\$POLAR_DIR"
-    nohup "\$POLAR_DIR/venv/bin/python" "\$POLAR_DIR/src/polar_cloud.py" >> "\$LOGFILE" 2>&1 &
+    nohup "\$POLAR_DIR/venv/bin/python" "\$POLAR_DIR/src/polar_cloud.py" > "\$CONSOLE_LOG" 2>&1 &
     echo \$! > "\$PIDFILE"
     echo "Polar Cloud started (PID: \$(cat \$PIDFILE))"
 }
@@ -384,7 +387,12 @@ start() {
 stop() {
     if [ -f "\$PIDFILE" ]; then
         echo "Stopping Polar Cloud..."
-        kill \$(cat "\$PIDFILE") 2>/dev/null
+        PID=\$(cat "\$PIDFILE")
+        kill "\$PID" 2>/dev/null
+        # Wait for exit so a restart never runs two agents at once
+        i=0
+        while kill -0 "\$PID" 2>/dev/null && [ \$i -lt 15 ]; do sleep 1; i=\$((i+1)); done
+        kill -9 "\$PID" 2>/dev/null
         rm -f "\$PIDFILE"
         echo "Polar Cloud stopped"
     else
