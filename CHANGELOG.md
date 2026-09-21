@@ -2,6 +2,68 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Printer make auto-detection on Creality K1-series printers.** The
+  installers write a generic `printer_type = Cartesian`, so K1s reported a
+  generic make to Polar Cloud. The agent now reads the model from Creality's
+  `system_config.json` and fills in `Creality K1`, `Creality K1C`,
+  `Creality K1 Max` or `Creality K1 SE` (names from the server's
+  `printerMakes` list). It only replaces the placeholder value, never a
+  make the user chose, and existing installs pick it up on their next start.
+- **Webcam on Creality K1 firmware 1.3.5.x.** That firmware stopped
+  starting `mjpg_streamer` on port 8080 and streams over WebRTC only, so
+  Polar Cloud got no images and Mainsail's `/webcam/` returned 502. If the
+  camera is running and nothing serves port 8080, the agent now starts
+  `mjpg_streamer` the way older firmware did. It checks what is running
+  rather than the firmware version, so older firmware and the Helper
+  Script's camera service (which already serve 8080) are left alone. Set
+  `manage_webcam_stream = false` to turn this off.
+- **Visible offline reasons.** `polar_cloud_status` and
+  `polar_cloud_status.json` now include a `problems` list (Moonraker
+  unreachable, not registered, Polar Cloud unreachable) with a message the
+  user can act on. The web UI shows them in a banner, including when
+  Moonraker itself is down and the page can't reach the agent.
+  Found on a K1C where a firmware update removed `moonraker.conf` and the
+  Polar Cloud credentials: the printer sat offline for weeks with nothing
+  visible outside the log.
+
+### Fixed
+- **Printer showed as idle while Moonraker was down.** Failed queries fell
+  through to status 0, so Polar Cloud listed the printer as ready while it
+  couldn't be monitored or controlled. It now reports 13 (Disconnected).
+  Status 12 (Error) was not used on purpose: job-completion handling treats
+  it as terminal and would cancel a cloud job that Klipper is still printing.
+- **Image uploads posted with an expired URL.** When the pre-signed URL
+  expired, the agent requested a new one but posted after a fixed 1s wait,
+  usually still with the old URL, which S3 rejects with
+  `403 SignatureDoesNotMatch`. It now clears the old URL and waits for the
+  new one.
+- **Failed image uploads were retried every ~5s instead of once per
+  interval.** Each retry re-captured and re-encoded the image (ffmpeg on
+  embedded printers) and logged the full S3 error. On a Kobra S1 with
+  `verbose = true` this ran the load average to ~12 and grew the log to
+  4.6 GB, filling `/useremain`. Attempts now count against the upload
+  interval whether they succeed or not, and S3 error bodies are truncated.
+- **A transient error could cancel a cloud print.** Any exception while
+  building the status fell back to status 12 (Error), which ends the cloud
+  job. It now reports 13 (Disconnected) instead.
+- **Log flooding during Moonraker outages.** Every 30s retry logged four
+  lines (about 11,500 a day). The agent now logs when the outage starts, a
+  summary every 10 minutes, and when Moonraker comes back; retry details
+  are at debug level.
+- **Status file went stale.** `polar_cloud_status.json` was only written on
+  connection events, so it could show days-old state. It's now refreshed
+  every minute.
+- **Web UI never updated after install.** Installers copy the page to
+  `web/index.html` once, and updates only change `src/`. The agent now
+  refreshes the served copy at startup.
+- **K1: crash output written to a rotated log.** The K1 service script
+  appended stdout to `polar_cloud.log`, which the agent also rotates, so
+  stdout kept writing to the rotated file. It now goes to
+  `polar_cloud_console.log`, truncated on each start (new installs only).
+
 ## [1.5.2] - 2026-04-07
 
 ### Fixed

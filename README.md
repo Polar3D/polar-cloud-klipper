@@ -193,6 +193,10 @@ webcam_enabled = true
 # flip_horizontal = false
 # flip_vertical = false
 # rotation = 0
+# Creality K1 series: start the camera's MJPEG stream on port 8080 when the
+# firmware doesn't (1.3.5.x streams over WebRTC only). Set to false if you
+# manage the camera stream yourself.
+# manage_webcam_stream = true
 
 # Advanced settings
 verbose = false
