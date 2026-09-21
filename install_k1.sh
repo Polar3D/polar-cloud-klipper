@@ -387,7 +387,12 @@ start() {
 stop() {
     if [ -f "\$PIDFILE" ]; then
         echo "Stopping Polar Cloud..."
-        kill \$(cat "\$PIDFILE") 2>/dev/null
+        PID=\$(cat "\$PIDFILE")
+        kill "\$PID" 2>/dev/null
+        # Wait for exit so a restart never runs two agents at once
+        i=0
+        while kill -0 "\$PID" 2>/dev/null && [ \$i -lt 15 ]; do sleep 1; i=\$((i+1)); done
+        kill -9 "\$PID" 2>/dev/null
         rm -f "\$PIDFILE"
         echo "Polar Cloud stopped"
     else

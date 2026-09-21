@@ -175,6 +175,7 @@ class MoonrakerConnection:
         self.connected = False
         self.klippy_ready = threading.Event()
         self.shutdown = False
+        self._stop_event = threading.Event()
         self.reconnect_delay = 1
         self.max_reconnect_delay = 30
 
@@ -198,6 +199,7 @@ class MoonrakerConnection:
             return False
 
         self.shutdown = False
+        self._stop_event.clear()
         self.ws_thread = threading.Thread(target=self._connection_loop, daemon=True)
         self.ws_thread.start()
         return True
@@ -205,6 +207,7 @@ class MoonrakerConnection:
     def stop(self):
         """Stop the WebSocket connection."""
         self.shutdown = True
+        self._stop_event.set()
         self.klippy_ready.clear()
         if self.ws:
             try:
@@ -233,7 +236,7 @@ class MoonrakerConnection:
                 self._log_outage()
 
             self._log_attempt(logging.INFO, f"Reconnecting to Moonraker in {self.reconnect_delay}s...")
-            time.sleep(self.reconnect_delay)
+            self._stop_event.wait(self.reconnect_delay)
             self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
 
     def _in_outage(self):
@@ -690,6 +693,9 @@ class PolarCloudService:
         self._cloud_down_since = time.time()  # None while connected to Polar Cloud
         self._last_status_file_write = 0.0
         self._last_stream_check = 0.0
+        self._warned_no_resizer = False
+        # Set on shutdown; loops wait on it instead of sleeping so they exit at once.
+        self._stop_event = threading.Event()
 
         # Auto-reset tracking for stuck cancelled/complete states
         self._stuck_state_detected_time = None
@@ -1548,7 +1554,20 @@ class PolarCloudService:
                     return version
 
         except Exception as e:
-            logger.warning(f"Error getting version from git: {e}")
+            logger.debug(f"Could not get version from git: {e}")
+
+        # Tarball installs (no git, e.g. install_embedded.sh) record the
+        # installed release in a VERSION file.
+        try:
+            version_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'VERSION')
+            with open(version_file) as f:
+                version = f.read().strip()
+            if version:
+                version = version[1:] if version.startswith('v') else version
+                logger.info(f"Detected version from VERSION file: {version}")
+                return version
+        except OSError:
+            pass
 
         fallback_version = "1.0.0-unknown"
         logger.warning(f"Could not determine version, using fallback: {fallback_version}")
@@ -2043,8 +2062,6 @@ class PolarCloudService:
             # Fallback to standard snapshot (may be too large without PIL)
             response = requests.get("http://localhost:8080/?action=snapshot", timeout=10)
             if response.status_code == 200:
-                if len(response.content) > max_size and not HAS_PIL:
-                    logger.warning(f"Webcam image ({len(response.content)} bytes) exceeds max size ({max_size}). PIL not available for resizing.")
                 return response.content
 
             logger.debug("No webcam available for snapshot")
@@ -2145,7 +2162,10 @@ class PolarCloudService:
             self._ffmpeg_cache = {'cmd': ffmpeg_cmd, 'env': ffmpeg_env}
 
         if not ffmpeg_cmd:
-            logger.debug("ffmpeg not found, cannot resize image")
+            if not self._warned_no_resizer:
+                self._warned_no_resizer = True
+                logger.warning(f"Neither PIL nor ffmpeg is available, so webcam images larger than "
+                               f"{max_size} bytes are uploaded without resizing")
             return image_data
 
         try:
@@ -2684,12 +2704,12 @@ class PolarCloudService:
                     self.last_version_report = current_time
 
                 consecutive_errors = 0
-                time.sleep(self.status_interval)
+                self._stop_event.wait(self.status_interval)
             except Exception as e:
                 consecutive_errors += 1
                 backoff = min(consecutive_errors * 5, 60)
                 logger.error(f"Error in status loop (attempt {consecutive_errors}, retry in {backoff}s): {e}")
-                time.sleep(backoff)
+                self._stop_event.wait(backoff)
 
     def run(self):
         """Main service loop"""
@@ -2710,17 +2730,20 @@ class PolarCloudService:
                     # Wait for events - the sync client handles this internally
                     # Just sleep and let handlers do their work
                     self._check_connection_health()
-                    time.sleep(1)
+                    self._stop_event.wait(1)
                 else:
-                    time.sleep(5)  # Wait before trying to connect
+                    self._stop_event.wait(5)  # Wait before trying to connect
 
             except Exception as e:
                 logger.error(f"Error in main loop: {e}")
-                time.sleep(5)
+                self._stop_event.wait(5)
 
     def stop(self):
-        """Stop the service"""
+        """Stop the service (safe to call more than once)"""
+        if self._stop_event.is_set():
+            return
         logger.info("Stopping Polar Cloud Service")
+        self._stop_event.set()
         self.running = False
         self.stop_status_loop()
 

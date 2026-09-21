@@ -19,3 +19,6 @@ web/
 
 # OS files
 .DS_Store
+
+# Installed version (tarball installs)
+VERSION

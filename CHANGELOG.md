@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.6.0] - 2026-09-21
 
 ### Added
 - **Printer make auto-detection on Creality K1-series printers.** The
@@ -28,6 +28,14 @@ All notable changes to this project will be documented in this file.
   Found on a K1C where a firmware update removed `moonraker.conf` and the
   Polar Cloud credentials: the printer sat offline for weeks with nothing
   visible outside the log.
+- **Embedded installs report their version.** `install_embedded.sh` now
+  installs the latest GitHub release (not whatever is on `main`) and writes
+  its tag to a `VERSION` file, which the agent reads when there's no git.
+  These installs previously reported `1.0.0-unknown` and always showed an
+  update as available. Set `POLAR_CLOUD_BRANCH` to install a branch for
+  testing.
+- **`scripts/release.sh`** tags and publishes a GitHub release from `main`,
+  using the CHANGELOG section as the release notes.
 
 ### Fixed
 - **Printer showed as idle while Moonraker was down.** Failed queries fell
@@ -63,6 +71,38 @@ All notable changes to this project will be documented in this file.
   appended stdout to `polar_cloud.log`, which the agent also rotates, so
   stdout kept writing to the rotated file. It now goes to
   `polar_cloud_console.log`, truncated on each start (new installs only).
+  The embedded installer's service scripts get the same fix.
+- **Two agents running during a restart.** Shutdown took up to ~12s while
+  threads finished sleeping, and the service scripts started the new
+  process after 2s, so both were connected to Polar Cloud under the same
+  serial. Shutdown is now immediate, and the generated service scripts wait
+  for the old process to exit (new installs only).
+- **Re-running the embedded installer didn't load the new code.** It called
+  `start`, which does nothing while the agent is running (and aborted the
+  install on the init.d path). It now restarts the agent.
+- **Misleading "PIL not available" warning** on every image upload when
+  ffmpeg was resizing the image anyway. The agent now warns once, only when
+  neither PIL nor ffmpeg can resize an oversized image.
+
+## [1.5.3] - 2026-07-09
+
+### Fixed
+- **Reconnection recovery after a cloud outage.** The service could stay
+  connected but silent after Polar Cloud dropped it: it re-sent `hello`,
+  but if the response was lost it sat connected-but-unauthenticated until
+  restarted. A handshake watchdog now forces a clean reconnect, a real
+  `authenticated` state replaces "hello was sent", and the status loop is
+  restarted if it stops while authenticated.
+- **Bounded log size.** `polar_cloud.log` now rotates at 5 MB x 3 backups
+  (about 20 MB). It had been seen at 300+ MB.
+- **Accurate print progress.** `file_position`/`file_size` come from
+  `virtual_sdcard` (falling back to `print_stats`), so the percentage is
+  right on Moonraker versions that don't report them in `print_stats`.
+
+### Platform support
+- **Anycubic Kobra S1 (Rinkhals):** packages install to the persistent
+  `/userdata/.../lib`, the agent starts on boot, and `LD_LIBRARY_PATH` is
+  set so ffmpeg works for webcam snapshots.
 
 ## [1.5.2] - 2026-04-07
 
