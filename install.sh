@@ -304,11 +304,6 @@ install_files() {
         print_info "Configuration file already exists, skipping"
     fi
 
-    # Copy test scripts
-    if [ -d "$SCRIPT_DIR/scripts" ]; then
-        sudo -u "$USER" sh -c "cp '$SCRIPT_DIR/scripts/'*.py '$POLAR_DIR/'" 2>/dev/null || true
-    fi
-
     # Clean up old Moonraker plugin if it exists (from previous installations)
     if [ -f "$MOONRAKER_COMPONENTS/polar_cloud.py" ]; then
         sudo rm -f "$MOONRAKER_COMPONENTS/polar_cloud.py"
@@ -369,6 +364,21 @@ EOF
         print_success "Added update manager configuration to moonraker.conf"
     else
         print_info "Update manager already configured for Polar Cloud"
+    fi
+
+    # Allow Moonraker to restart polar_cloud (update manager's managed_services).
+    # Without this Moonraker shows a "not permitted to restart service" warning
+    # and updates don't restart the service onto the new code.
+    local asvc_file="$PRINTER_DATA_DIR/moonraker.asvc"
+    if [ -f "$asvc_file" ]; then
+        if ! grep -qx "polar_cloud" "$asvc_file"; then
+            # Make sure the file ends with a newline before appending
+            [ -n "$(tail -c1 "$asvc_file")" ] && echo "" >> "$asvc_file"
+            echo "polar_cloud" >> "$asvc_file"
+            print_success "Added polar_cloud to moonraker.asvc"
+        fi
+    else
+        print_warning "moonraker.asvc not found; Moonraker may not be able to restart polar_cloud after updates"
     fi
 }
 
@@ -658,7 +668,7 @@ print_instructions() {
     echo "• Check service status: sudo systemctl status polar_cloud"
     echo "• View logs: sudo journalctl -u polar_cloud -f"
     echo "• Restart service: sudo systemctl restart polar_cloud"
-    echo "• Test connection: cd $POLAR_DIR && ./venv/bin/python test_socketio.py"
+    echo "• Test connection: cd $POLAR_DIR && ./venv/bin/python scripts/test_socketio.py"
     echo ""
 }
 

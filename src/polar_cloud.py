@@ -12,6 +12,7 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import subprocess
 import uuid
 import hashlib
@@ -366,6 +367,7 @@ class MoonrakerConnection:
             if method == 'notify_klippy_ready':
                 logger.info("Klippy is ready")
                 self.klippy_ready.set()
+                self._subscribe_to_printer_objects()
                 self.on_event('klippy_ready', {})
 
             elif method == 'notify_klippy_shutdown':
@@ -442,32 +444,27 @@ class MoonrakerConnection:
                 logger.error(f"Error sending message to Moonraker: {e}")
 
     def _initialize_connection(self):
-        """Initialize connection after WebSocket is open."""
-        # First check if Klippy is already ready
+        """Initialize connection after WebSocket is open.
+
+        Identify as an agent right away: the web UI reaches us through
+        Moonraker's agent API, and users need it to register while Klipper is
+        still in error (no printer.cfg, MCU not flashed yet). Printer objects
+        are subscribed once Klippy is ready, now or whenever
+        notify_klippy_ready arrives.
+        """
+        self._identify_as_agent()
+
         def on_server_info(data):
             result = data.get('result', {})
             klippy_state = result.get('klippy_state', 'disconnected')
             if klippy_state == 'ready':
                 logger.info("Klippy already ready")
                 self.klippy_ready.set()
+                self._subscribe_to_printer_objects()
             else:
                 logger.info(f"Klippy state: {klippy_state}, waiting for ready...")
 
         self.send_request('server.info', callback=on_server_info)
-
-        # Wait for Klippy to be ready
-        if not self.klippy_ready.wait(timeout=60):
-            logger.warning("Timeout waiting for Klippy ready")
-            return
-
-        # Identify as an agent
-        self._identify_as_agent()
-
-        # Subscribe to printer objects for real-time updates
-        self._subscribe_to_printer_objects()
-
-        # Notify that we're fully initialized
-        self.on_event('moonraker_ready', {})
 
     def _identify_as_agent(self):
         """Identify this connection as a Polar Cloud agent."""
@@ -483,6 +480,7 @@ class MoonrakerConnection:
                 logger.error(f"Agent identification failed: {data['error']}")
             else:
                 logger.info("Identified as Polar Cloud agent")
+                self.on_event('moonraker_ready', {})
 
         self.send_request('server.connection.identify', params=params, callback=on_identify)
 
@@ -691,6 +689,8 @@ class PolarCloudService:
         self.last_error = None
         self.last_error_time = None
         self._cloud_down_since = time.time()  # None while connected to Polar Cloud
+        self._klippy_down_since = None  # Set while Klipper is in error/startup/disconnected
+        self._klippy_down_message = ""
         self._last_status_file_write = 0.0
         self._last_stream_check = 0.0
         self._warned_no_resizer = False
@@ -1068,6 +1068,10 @@ class PolarCloudService:
                     else:
                         logger.error("Configuration error - please check polar_cloud.conf")
                     logger.warning("Cannot register or authenticate without proper credentials")
+                    # Nothing to wait for until credentials are entered (the web
+                    # UI's register reconnects), so don't let the hello watchdog
+                    # reconnect every hello_timeout and repeat these errors.
+                    self._auth_deadline = None
             except Exception as e:
                 logger.error(f"Error handling welcome: {e}")
 
@@ -1389,6 +1393,14 @@ class PolarCloudService:
                            "update, moonraker.conf may be missing.",
                 "since": since(conn.down_since),
             })
+        elif self._klippy_down_since is not None and now - self._klippy_down_since > 60:
+            detail = f" Klipper says: {self._klippy_down_message}" if self._klippy_down_message else ""
+            problems.append({
+                "code": "klipper_not_ready",
+                "message": "Klipper is not ready, so Polar Cloud cannot print. Check "
+                           "printer.cfg and klippy.log, then restart Klipper." + detail,
+                "since": since(self._klippy_down_since),
+            })
 
         if not self.serial_number:
             username = self.config.get('polar_cloud', 'username', fallback='').strip()
@@ -1681,8 +1693,9 @@ class PolarCloudService:
                 return {'result': {'status': result_status}}
 
         elif endpoint == "printer/info":
-            # For printer/info, we need webhooks state
-            if 'webhooks' in state:
+            # For printer/info, we need webhooks state. Once Klippy leaves
+            # ready, the cached webhooks can be stale, so ask Moonraker.
+            if 'webhooks' in state and self.moonraker_conn.klippy_ready.is_set():
                 webhooks = state['webhooks']
                 return {
                     'result': {
@@ -1770,6 +1783,20 @@ class PolarCloudService:
                 elif 'virtual_sdcard' in result_data:
                     vsd = result_data['virtual_sdcard']
 
+            klippy_state = None
+            klippy_message = ""
+            if printer_info and isinstance(printer_info.get('result'), dict):
+                klippy_state = printer_info['result'].get('state')
+                # First line only; Klipper appends restart instructions
+                klippy_message = (printer_info['result'].get('state_message') or '').strip().split('\n')[0][:200]
+
+            if klippy_state in ('error', 'startup', 'disconnected'):
+                if self._klippy_down_since is None:
+                    self._klippy_down_since = time.time()
+                self._klippy_down_message = klippy_message
+            elif klippy_state is not None:
+                self._klippy_down_since = None
+
             conn = self.moonraker_conn
             moonraker_down = (conn.down_since is not None) if conn else print_stats is None
 
@@ -1781,6 +1808,14 @@ class PolarCloudService:
                 status = self.PSTATE_OFFLINE
                 progress = "Disconnected"
                 progress_detail = "Moonraker is not responding"
+            elif klippy_state in ('error', 'startup', 'disconnected'):
+                # Klipper isn't running (config error, MCU unreachable, still
+                # starting), so there is no printer to report as Idle. Like a
+                # Moonraker outage this is Offline (13), not Error (12), so a
+                # restart doesn't cancel a cloud job.
+                status = self.PSTATE_OFFLINE
+                progress = "Klipper not ready"
+                progress_detail = klippy_message or f"Klipper state: {klippy_state}"
             elif self.job_is_preparing and self.is_printing_cloud_job and self.current_job_id:
                 status = self.PSTATE_PREPARING
                 progress = "Preparing to print a job"
@@ -2035,6 +2070,36 @@ class PolarCloudService:
                 logger.warning(f"Could not start mjpg_streamer: {result.stdout or result.stderr}".strip())
         except (OSError, subprocess.SubprocessError) as e:
             logger.warning(f"Could not start mjpg_streamer: {e}")
+
+    def ensure_moonraker_service_allowed(self):
+        """Let Moonraker restart polar_cloud when it updates the plugin.
+
+        [update_manager polar_cloud] lists polar_cloud under managed_services,
+        but Moonraker only restarts services named in moonraker.asvc. Older
+        generic installs never added it, so Moonraker shows a "not permitted
+        to restart service" warning and updates keep running the old code
+        until a reboot. Moonraker reads the file at startup, so this takes
+        effect the next time Moonraker restarts.
+        """
+        asvc_file = os.path.join(PRINTER_DATA_PATH, 'moonraker.asvc')
+        moonraker_conf = os.path.join(PRINTER_DATA_PATH, 'config', 'moonraker.conf')
+        try:
+            if not os.path.isfile(asvc_file) or not os.path.isfile(moonraker_conf):
+                return
+            with open(moonraker_conf) as f:
+                if not re.search(r'^managed_services:.*\bpolar_cloud\b', f.read(), re.MULTILINE):
+                    return
+            with open(asvc_file) as f:
+                content = f.read()
+            if 'polar_cloud' in content.split():
+                return
+            with open(asvc_file, 'a') as f:
+                if content and not content.endswith('\n'):
+                    f.write('\n')
+                f.write('polar_cloud\n')
+            logger.info(f"Added polar_cloud to {asvc_file} so Moonraker can restart it after updates")
+        except OSError as e:
+            logger.warning(f"Could not add polar_cloud to {asvc_file}: {e}")
 
     def capture_webcam_image(self):
         """Capture image from webcam"""
@@ -2714,6 +2779,7 @@ class PolarCloudService:
     def run(self):
         """Main service loop"""
         logger.info("Starting Polar Cloud Service")
+        self.ensure_moonraker_service_allowed()
         self.ensure_mjpg_stream()
 
         while self.running:
