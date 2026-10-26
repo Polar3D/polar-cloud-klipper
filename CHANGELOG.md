@@ -2,6 +2,36 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.1] - 2026-10-26
+
+Found while testing on MainsailOS 3.0.0 (Debian 13, Python 3.13, Raspberry
+Pi 5). The install itself works unchanged; these issues affect every
+generic Klipper install.
+
+### Fixed
+- **Registering from the web UI while Klipper isn't ready.** The agent only
+  identified itself to Moonraker after Klipper reported ready, and gave up
+  after 60s. With Klipper in error (no `printer.cfg`, MCU not flashed yet),
+  the `/polar-cloud/` page failed with "Agent polar_cloud not connected", so
+  new users couldn't register. The agent now identifies as soon as it
+  reaches Moonraker, and subscribes to printer state whenever Klipper
+  becomes ready, however late.
+- **Updates not restarting the service.** The generic installer never added
+  `polar_cloud` to `moonraker.asvc`, so Moonraker showed "not permitted to
+  restart service 'polar_cloud'" and an update kept running the old code
+  until a reboot. The installer now adds it, and the agent adds it on
+  startup for existing installs (effective after Moonraker's next restart).
+- **Status while Klipper isn't ready.** The agent reported Idle when
+  Klipper was in error or still starting. It now reports Offline (13) with
+  Klipper's message, and the web UI shows a "Klipper is not ready" problem
+  after a minute.
+- **Reconnect loop while unregistered.** Without credentials the agent
+  dropped and reconnected to Polar Cloud every 30s, repeating the same
+  errors. It now stays connected until credentials are entered.
+- **"Untracked source files" in Moonraker's update manager.** The installer
+  copied `scripts/*.py` into the repository root. It no longer does; run
+  them from `scripts/`.
+
 ## [1.6.0] - 2026-09-21
 
 ### Added
