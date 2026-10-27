@@ -640,6 +640,7 @@ class PolarCloudService:
         # response during an outage), instead of sitting connected-but-idle.
         self.authenticated = False
         self._auth_deadline = None
+        self._sio_mismatch_since = None  # When self.connected disagreed with sio.connected
         self.hello_timeout = 30  # seconds to complete the hello handshake
         self.status_interval = 5  # Send status every 5 seconds
         self.moonraker_url = "http://localhost:7125"
@@ -999,13 +1000,7 @@ class PolarCloudService:
         @self.sio.event
         def disconnect():
             logger.warning("Disconnected from Polar Cloud Socket.IO server")
-            self.connected = False
-            if self._cloud_down_since is None:
-                self._cloud_down_since = time.time()
-            self.hello_sent = False
-            self.authenticated = False
-            self._auth_deadline = None
-            self.write_status_file()
+            self._mark_cloud_disconnected()
 
         @self.sio.event
         def connect_error(data):
@@ -2101,6 +2096,65 @@ class PolarCloudService:
         except OSError as e:
             logger.warning(f"Could not add polar_cloud to {asvc_file}: {e}")
 
+    def ensure_update_manager_path(self):
+        """Point [update_manager polar_cloud] at the checkout we run from.
+
+        The first installers used ~/polar-cloud; later ones use
+        ~/polar-cloud-klipper but leave an existing update_manager section
+        alone. After a reinstall the section points at a directory that no
+        longer exists, so Moonraker drops it with warnings and the printer
+        never gets updates. Only a path that doesn't exist is replaced, never
+        one the user set to a real directory. Moonraker reads moonraker.conf
+        at startup, so this takes effect the next time Moonraker restarts.
+        """
+        repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        moonraker_conf = os.path.join(PRINTER_DATA_PATH, 'config', 'moonraker.conf')
+        if not os.path.isdir(os.path.join(repo_dir, '.git')) or not os.path.isfile(moonraker_conf):
+            return
+        try:
+            with open(moonraker_conf) as f:
+                lines = f.readlines()
+            in_section = False
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped.startswith('['):
+                    in_section = stripped == '[update_manager polar_cloud]'
+                    continue
+                match = re.match(r'path\s*[:=]\s*(.+)$', stripped) if in_section else None
+                if not match:
+                    continue
+                old_path = match.group(1).strip()
+                if os.path.isdir(os.path.expanduser(old_path)):
+                    return
+                lines[i] = f"path: {repo_dir}\n"
+                # Write in place rather than replace, in case it's a symlink
+                with open(moonraker_conf, 'w') as f:
+                    f.writelines(lines)
+                logger.warning(f"[update_manager polar_cloud] path {old_path} does not exist; "
+                               f"changed it to {repo_dir} in {moonraker_conf}. Moonraker will "
+                               "manage Polar Cloud updates again after its next restart.")
+                return
+        except OSError as e:
+            logger.warning(f"Could not check the update_manager path in {moonraker_conf}: {e}")
+
+    def remove_stray_script_copies(self):
+        """Delete repo-root copies of scripts/*.py that old installers made.
+
+        Moonraker reports them as untracked files. Only exact copies are
+        removed, so anything a user edited stays.
+        """
+        repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for src in glob.glob(os.path.join(repo_dir, 'scripts', '*.py')):
+            copy = os.path.join(repo_dir, os.path.basename(src))
+            try:
+                if os.path.isfile(copy):
+                    with open(src, 'rb') as a, open(copy, 'rb') as b:
+                        if a.read() == b.read():
+                            os.remove(copy)
+                            logger.info(f"Removed stray copy {copy} (the original is in scripts/)")
+            except OSError as e:
+                logger.debug(f"Could not remove {copy}: {e}")
+
     def capture_webcam_image(self):
         """Capture image from webcam"""
         self.ensure_mjpg_stream()
@@ -2717,6 +2771,22 @@ class PolarCloudService:
         welcome/hello cycle starts instead of sitting idle forever. Also restarts
         the status loop if it has died while we're still authenticated.
         """
+        # python-socketio only fires our disconnect handler if it thinks it was
+        # connected, so a socket that drops mid-reconnect (or the watchdog's
+        # own disconnect below) can leave self.connected stuck at True. The
+        # main loop then never reconnects and the agent sits silent and
+        # offline. A Sovol on 1.5.3 stayed like that for over a day. Give
+        # socketio's own reconnect a moment, then reset our state.
+        if self.connected and not self.sio.connected:
+            if self._sio_mismatch_since is None:
+                self._sio_mismatch_since = time.time()
+            elif time.time() - self._sio_mismatch_since > 30:
+                logger.warning("Lost the Polar Cloud connection without a disconnect event; reconnecting")
+                self._sio_mismatch_since = None
+                self._mark_cloud_disconnected()
+            return
+        self._sio_mismatch_since = None
+
         if self.authenticated:
             if self._status_thread is None or not self._status_thread.is_alive():
                 logger.warning("Status loop not running while authenticated; restarting it")
@@ -2729,13 +2799,25 @@ class PolarCloudService:
                 f"Hello handshake did not complete within {self.hello_timeout}s; "
                 "forcing reconnect to recover"
             )
-            self._auth_deadline = None
             try:
                 # An explicit disconnect does not trigger auto-reconnect, so the
                 # main loop reconnects cleanly on its next iteration.
                 self.sio.disconnect()
             except Exception as e:
                 logger.error(f"Error forcing reconnect during health check: {e}")
+            # Don't depend on the disconnect event; it doesn't fire if the
+            # socket had already dropped.
+            self._mark_cloud_disconnected()
+
+    def _mark_cloud_disconnected(self):
+        """Reset connection state so the main loop reconnects (safe to repeat)."""
+        self.connected = False
+        if self._cloud_down_since is None:
+            self._cloud_down_since = time.time()
+        self.hello_sent = False
+        self.authenticated = False
+        self._auth_deadline = None
+        self.write_status_file()
 
     def start_status_loop(self):
         """Start the status loop in a background thread"""
@@ -2780,6 +2862,8 @@ class PolarCloudService:
         """Main service loop"""
         logger.info("Starting Polar Cloud Service")
         self.ensure_moonraker_service_allowed()
+        self.ensure_update_manager_path()
+        self.remove_stray_script_copies()
         self.ensure_mjpg_stream()
 
         while self.running:
@@ -3146,16 +3230,7 @@ class PolarCloudService:
                     self.running_version = new_version
                     logger.info(f"Updated to version: {self.running_version}")
 
-                # Try systemctl first, then init.d, then just restart self
-                try:
-                    subprocess.run(["sudo", "systemctl", "restart", "polar_cloud.service"], timeout=30)
-                    logger.info("Service restart initiated via systemctl")
-                except Exception:
-                    try:
-                        subprocess.run(["/etc/init.d/S99polar_cloud", "restart"], timeout=30)
-                        logger.info("Service restart initiated via init.d")
-                    except Exception:
-                        logger.info("Could not restart service automatically")
+                self._restart_self()
 
             else:
                 logger.error(f"Git pull failed: {result.stderr}")
@@ -3166,6 +3241,34 @@ class PolarCloudService:
             logger.error(f"Error executing update command: {e}")
         finally:
             self.current_status_override = None
+
+    def _restart_self(self):
+        """Restart the service so it runs the newly pulled code.
+
+        sudo can't work here: the systemd unit sets NoNewPrivileges, and
+        most users' sudo needs a password. Ask Moonraker first (allowed via
+        moonraker.asvc), then the K1 init.d script, then exit and let
+        systemd's Restart=always start us again.
+        """
+        try:
+            response = requests.post(f"{self.moonraker_url}/machine/services/restart",
+                                     params={"service": "polar_cloud"}, timeout=30)
+            if response.status_code == 200:
+                logger.info("Service restart requested from Moonraker")
+                return
+            logger.info(f"Moonraker could not restart polar_cloud: {response.text[:200]}")
+        except requests.RequestException as e:
+            logger.info(f"Moonraker could not restart polar_cloud: {e}")
+
+        if os.path.isfile("/etc/init.d/S99polar_cloud"):
+            subprocess.run(["/etc/init.d/S99polar_cloud", "restart"], timeout=30)
+            logger.info("Service restart initiated via init.d")
+        elif os.environ.get("INVOCATION_ID"):
+            logger.info("Exiting so systemd restarts the service on the new code")
+            logging.shutdown()
+            os._exit(0)
+        else:
+            logger.warning("Could not restart the service automatically; restart it to run the update")
 
     def execute_delete_command(self):
         """Execute delete command - reset printer to unregistered state"""

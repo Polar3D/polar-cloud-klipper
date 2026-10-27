@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.2] - 2026-10-27
+
+Found while updating the HQ Sovol (MKS Pi, Armbian Buster, Python 3.7),
+which had been offline on 1.5.3 for over a day and couldn't update.
+
+### Fixed
+- **Agent silently offline after a connection drop.** If the Polar Cloud
+  socket dropped while python-socketio was reconnecting, our disconnect
+  handler never ran. The agent kept believing it was connected and the
+  hello watchdog had already disarmed, so it never reconnected and logged
+  nothing. The health check now notices when socketio reports disconnected
+  and reconnects after 30s, and the watchdog resets the connection state
+  itself instead of waiting for an event that may not come.
+- **Printers that never get updates.** The first installers used
+  `~/polar-cloud`; later ones moved to `~/polar-cloud-klipper` but kept an
+  existing `[update_manager polar_cloud]` section. Moonraker then dropped
+  the section (with five warnings in Mainsail). The installer and the agent
+  now point a section whose path doesn't exist at the actual checkout.
+  Effective after Moonraker's next restart; a path that exists is never
+  changed.
+- **Update button didn't restart the service.** It ran `sudo systemctl
+  restart`, which can't work under the unit's `NoNewPrivileges` (or a sudo
+  password). It now asks Moonraker to restart the service, then falls back
+  to the K1 init.d script, then exits so systemd restarts it.
+- **Leftover script copies** in the repository root from old installers are
+  removed when identical to `scripts/`, clearing Moonraker's "untracked
+  files" notice on existing installs.
+
 ## [1.6.1] - 2026-10-26
 
 Found while testing on MainsailOS 3.0.0 (Debian 13, Python 3.13, Raspberry
