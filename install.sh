@@ -668,10 +668,16 @@ print_instructions() {
     print_header
     print_success "Polar Cloud installation complete!"
     echo ""
-    print_info "Next steps:"
-    echo "1. Navigate to http://your-printer-ip/polar-cloud/"
-    echo "2. Enter your Polar Cloud credentials"
-    echo "3. Select your printer type and configure settings"
+    local serial
+    serial=$(sed -n 's/^serial_number[[:space:]]*=[[:space:]]*//p' "$PRINTER_DATA_DIR/config/polar_cloud.conf" 2>/dev/null | head -1)
+    if [ -n "$serial" ]; then
+        print_success "Already registered with Polar Cloud (serial $serial). Nothing else to do."
+    else
+        print_info "Next steps:"
+        echo "1. Navigate to http://your-printer-ip/polar-cloud/"
+        echo "2. Enter your Polar Cloud credentials"
+        echo "3. Select your printer type and configure settings"
+    fi
     echo ""
     print_info "Useful commands:"
     echo "• Check service status: sudo systemctl status polar_cloud"

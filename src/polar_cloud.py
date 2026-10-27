@@ -3334,12 +3334,25 @@ def sync_web_interface():
     Installers copy src/polar_cloud_web.html to web/index.html once, and
     updates only pull src/, so without this the served page would stay at
     whatever version was first installed.
+
+    Also make the page readable by nginx's worker user. K1 root shells use
+    umask 077, so the installer's copy came out 0600 and nginx returned 403
+    for /polar-cloud/; writing in place below would keep that mode.
     """
     src_dir = os.path.dirname(os.path.abspath(__file__))
     source = os.path.join(src_dir, 'polar_cloud_web.html')
     target = os.path.join(os.path.dirname(src_dir), 'web', 'index.html')
     if not (os.path.isfile(source) and os.path.isfile(target)):
         return
+    # Add read (and, for the directory, search) for everyone; never remove bits
+    for path, needed in ((os.path.dirname(target), 0o555), (target, 0o444)):
+        try:
+            mode = os.stat(path).st_mode
+            if mode & needed != needed:
+                os.chmod(path, mode | needed)
+                logger.info(f"Made {path} readable by the web server")
+        except OSError as e:
+            logger.warning(f"Could not make {path} readable by the web server: {e}")
     try:
         with open(source, 'rb') as f:
             new = f.read()

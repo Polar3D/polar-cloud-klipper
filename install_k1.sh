@@ -165,7 +165,7 @@ check_dependencies() {
     print_success "Found: git"
 
     # nginx is pre-installed on K1 with Fluidd
-    if ! command -v nginx >/dev/null 2>&1; then
+    if [ -z "$(nginx_bin)" ]; then
         print_warning "nginx not found - web interface may not be accessible"
     else
         print_success "Found: nginx"
@@ -343,6 +343,9 @@ install_files() {
 
     # Copy web interface
     cp "$INSTALL_DIR/src/polar_cloud_web.html" "$INSTALL_DIR/web/index.html"
+    # K1 root uses umask 077; nginx runs as www-data and needs to read these
+    chmod 755 "$INSTALL_DIR/web"
+    chmod 644 "$INSTALL_DIR/web/index.html"
     print_success "Installed web interface"
 
     # Copy configuration template if no config exists
@@ -507,6 +510,33 @@ EOF
     fi
 }
 
+# K1 firmware ships nginx at /usr/data/nginx/sbin/nginx, not on PATH
+nginx_bin() {
+    if [ -x "/usr/data/nginx/sbin/nginx" ]; then
+        echo "/usr/data/nginx/sbin/nginx"
+    else
+        command -v nginx 2>/dev/null
+    fi
+}
+
+# Test an nginx config file
+test_nginx() {
+    local bin
+    bin=$(nginx_bin)
+    [ -n "$bin" ] && "$bin" -t -c "$1" >/dev/null 2>&1
+}
+
+# Reload nginx (K1 uses different nginx control methods)
+reload_nginx() {
+    if [ -x "/etc/init.d/S50nginx" ]; then
+        /etc/init.d/S50nginx restart 2>/dev/null
+    elif [ -n "$(nginx_bin)" ]; then
+        "$(nginx_bin)" -s reload 2>/dev/null
+    else
+        killall -HUP nginx 2>/dev/null || true
+    fi
+}
+
 # Configure nginx
 configure_nginx() {
     print_info "Configuring nginx for Polar Cloud web interface..."
@@ -533,6 +563,19 @@ configure_nginx() {
     # Check if already configured
     if grep -q "polar-cloud" "$nginx_conf"; then
         print_info "Nginx already configured for Polar Cloud"
+        # Older installs redirected /polar-cloud to port 4408 from every
+        # server block, a 404 when Fluidd isn't installed. Keep the port the
+        # browser used instead.
+        if grep -q 'host:4408/polar-cloud/' "$nginx_conf"; then
+            cp "$nginx_conf" "${nginx_conf}.polar_backup"
+            sed -i 's|\$scheme://\$host:4408/polar-cloud/|$scheme://$http_host/polar-cloud/|' "$nginx_conf"
+            if test_nginx "$nginx_conf"; then
+                reload_nginx
+                print_success "Fixed the /polar-cloud redirect to keep the browser's port"
+            else
+                cp "${nginx_conf}.polar_backup" "$nginx_conf"
+            fi
+        fi
         return
     fi
 
@@ -552,7 +595,7 @@ configure_nginx() {
         /location \// && !inserted {
             print "        # Polar Cloud web interface"
             print "        location = /polar-cloud {"
-            print "            return 301 $scheme://$host:4408/polar-cloud/;"
+            print "            return 301 $scheme://$http_host/polar-cloud/;"
             print "        }"
             print ""
             print "        location /polar-cloud/ {"
@@ -580,7 +623,7 @@ configure_nginx() {
         echo ""
         echo "        # Polar Cloud web interface"
         echo "        location = /polar-cloud {"
-        echo "            return 301 \$scheme://\$host:4408/polar-cloud/;"
+        echo "            return 301 \$scheme://\$http_host/polar-cloud/;"
         echo "        }"
         echo ""
         echo "        location /polar-cloud/ {"
@@ -592,15 +635,8 @@ configure_nginx() {
     fi
 
     # Test and reload nginx
-    if nginx -t 2>/dev/null; then
-        # K1 uses different nginx control methods
-        if [ -x "/etc/init.d/S50nginx" ]; then
-            /etc/init.d/S50nginx restart 2>/dev/null
-        elif [ -x "/usr/data/nginx/nginx/sbin/nginx" ]; then
-            /usr/data/nginx/nginx/sbin/nginx -s reload 2>/dev/null
-        else
-            nginx -s reload 2>/dev/null || killall -HUP nginx 2>/dev/null || true
-        fi
+    if test_nginx "$nginx_conf"; then
+        reload_nginx
         print_success "Nginx configuration updated and reloaded"
     else
         print_warning "Nginx configuration test failed, restoring backup"
@@ -665,10 +701,33 @@ print_instructions() {
     print_header
     print_success "Polar Cloud installation complete!"
     echo ""
-    print_info "Next steps:"
-    echo "1. Navigate to http://${ip_addr:-your-printer-ip}:4408/polar-cloud/"
-    echo "2. Enter your Polar Cloud credentials"
-    echo "3. Select your printer type and configure settings"
+    # The page is on whichever nginx servers got the /polar-cloud/ location:
+    # Fluidd (4408), Mainsail (4409), or both, depending on what's installed.
+    local conf ports="" urls=""
+    for conf in /usr/data/nginx/nginx/nginx.conf /etc/nginx/nginx.conf; do
+        if [ -f "$conf" ]; then
+            ports=$(awk '/^[[:space:]]*listen[[:space:]]/ { p = $2; sub(/;.*/, "", p); sub(/.*:/, "", p) }
+                         /location \/polar-cloud\// { print p }' "$conf" | sort -u)
+            break
+        fi
+    done
+    for p in $ports; do
+        urls="$urls http://${ip_addr:-your-printer-ip}:$p/polar-cloud/"
+    done
+    [ -z "$urls" ] && urls=" http://${ip_addr:-your-printer-ip}:<Mainsail or Fluidd port>/polar-cloud/"
+
+    local serial
+    serial=$(sed -n 's/^serial_number[[:space:]]*=[[:space:]]*//p' "$PRINTER_DATA_DIR/config/polar_cloud.conf" 2>/dev/null | head -1)
+    if [ -n "$serial" ]; then
+        print_success "Already registered with Polar Cloud (serial $serial). Nothing else to do."
+        for u in $urls; do echo "Polar Cloud page: $u"; done
+    else
+        print_info "Next steps:"
+        echo "1. Navigate to the Polar Cloud page:"
+        for u in $urls; do echo "     $u"; done
+        echo "2. Enter your Polar Cloud credentials"
+        echo "3. Select your printer type and configure settings"
+    fi
     echo ""
     print_info "Useful commands:"
     echo "• Check service status: /usr/data/polar_cloud_service.sh status"

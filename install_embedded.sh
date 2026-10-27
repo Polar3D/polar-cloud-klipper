@@ -594,6 +594,14 @@ main() {
     echo ""
     print_success "Installation complete!"
     echo ""
+    serial=$(sed -n 's/^serial_number[[:space:]]*=[[:space:]]*//p' "$(detect_printer_data_path)/config/polar_cloud.conf" 2>/dev/null | head -1)
+    if [ -n "$serial" ]; then
+        print_success "Already registered with Polar Cloud (serial $serial). Nothing else to do."
+        echo ""
+        echo "Logs: tail -f $(detect_printer_data_path)/logs/polar_cloud.log"
+        echo ""
+        return
+    fi
     echo "Next steps:"
     echo "  1. Edit your configuration:"
     echo "     vi $(detect_printer_data_path)/config/polar_cloud.conf"
