@@ -364,6 +364,15 @@ EOF
         print_success "Added update manager configuration to moonraker.conf"
     else
         print_info "Update manager already configured for Polar Cloud"
+        # Early installers used ~/polar-cloud. If the section points at a
+        # directory that no longer exists, Moonraker drops it and the printer
+        # never gets updates, so point it at this install.
+        local um_path
+        um_path=$(sed -n '/^\[update_manager polar_cloud\]/,/^\[/{s/^path[[:space:]]*[:=][[:space:]]*//p}' "$moonraker_conf" | head -1)
+        if [ -n "$um_path" ] && [ ! -d "$(eval echo "$um_path")" ]; then
+            sed -i "/^\[update_manager polar_cloud\]/,/^\[/{s|^path[[:space:]]*[:=].*|path: $POLAR_DIR|}" "$moonraker_conf"
+            print_success "Fixed update manager path ($um_path does not exist, now $POLAR_DIR)"
+        fi
     fi
 
     # Allow Moonraker to restart polar_cloud (update manager's managed_services).
