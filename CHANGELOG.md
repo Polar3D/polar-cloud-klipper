@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.3] - 2026-10-27
+
+### Fixed
+- **`/polar-cloud/` returned 403 on Creality K1 printers.** K1 root shells
+  use `umask 077`, so the installer's copy of the web page was readable only
+  by root and nginx (running as `www-data`) refused it. The installer now
+  sets the modes, and the agent makes the page readable on startup so
+  existing installs are fixed by updating.
+- **K1 installer and nginx.** It looked for nginx on `PATH` and at
+  `/usr/data/nginx/nginx/sbin/nginx`, but K1 firmware has it at
+  `/usr/data/nginx/sbin/nginx`, so the config test failed and a fresh
+  install could roll back its own nginx changes. The `/polar-cloud`
+  redirect also always sent the browser to port 4408 (a 404 without Fluidd);
+  it now keeps the port the browser used, and re-running the installer
+  fixes existing configs.
+- **Installer instructions.** The closing message now names the ports the
+  page is actually served on (K1), and says the printer is already
+  registered instead of asking for credentials again (all installers).
+
 ## [1.6.2] - 2026-10-27
 
 Found while updating the HQ Sovol (MKS Pi, Armbian Buster, Python 3.7),
