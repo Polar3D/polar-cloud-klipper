@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.7.0] - 2026-11-13
 
 ### Fixed
 - **Installer on stripped-down vendor images (e.g. FLSun T1 Pro).** A
