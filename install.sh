@@ -219,15 +219,17 @@ check_dependencies() {
 # Check repositories first
         check_repositories
 
-        # Update package lists with error handling
-        sudo apt-get update
+        # A stale or 404ing source (e.g. end-of-life Debian on vendor images
+        # like the FLSun T1 Pro) makes update fail even when the packages we
+        # need are still installable, so keep going.
+        if ! sudo apt-get update; then
+            print_warning "apt-get update reported errors; trying to install anyway"
+        fi
 
-        # Install packages with error handling
+        # The check below decides whether we can continue, so an apt failure
+        # here is not fatal on its own.
         if ! sudo apt-get install -y python3 python3-pip python3-venv git nginx; then
-            print_error "Failed to install required packages!"
-            print_info "Please manually install missing packages and run installer again:"
-            echo "  sudo apt-get install python3 python3-pip python3-venv git nginx"
-            exit 1
+            print_warning "apt-get install reported errors"
         fi
 
         # Verify installation succeeded
@@ -241,7 +243,8 @@ check_dependencies() {
 
         if [ "$install_failed" = true ]; then
             print_error "Some packages failed to install properly"
-            print_info "Please install missing packages manually and run installer again"
+            print_info "Please install missing packages manually and run installer again:"
+            echo "  sudo apt-get install python3 python3-pip python3-venv git nginx"
             exit 1
         fi
 
@@ -273,13 +276,65 @@ install_venv() {
     sudo -u "$USER" "$VENV_DIR/bin/pip" install --upgrade pip
     
     # Install requirements
-    if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
-        sudo -u "$USER" "$VENV_DIR/bin/pip" install -r "$SCRIPT_DIR/requirements.txt"
-        print_success "Installed Python dependencies"
-    else
+    if [ ! -f "$SCRIPT_DIR/requirements.txt" ]; then
         print_error "requirements.txt not found in $SCRIPT_DIR"
         exit 1
     fi
+    if sudo -u "$USER" "$VENV_DIR/bin/pip" install -r "$SCRIPT_DIR/requirements.txt"; then
+        print_success "Installed Python dependencies"
+    else
+        print_warning "Some Python packages failed to install; installing them one at a time"
+        install_python_deps_individually
+    fi
+    verify_python_deps
+}
+
+# Fallback for images without a compiler (e.g. FLSun T1 Pro: 32-bit ARM,
+# Python 3.7, compiler and headers removed), where a package with no prebuilt
+# wheel fails to build and takes the whole requirements install down with it.
+# The agent works without cryptography (pure-Python rsa) and without Pillow
+# (ffmpeg resize).
+install_python_deps_individually() {
+    local pip="$VENV_DIR/bin/pip"
+
+    if ! sudo -u "$USER" "$pip" install --prefer-binary "python-socketio[client]>=5.0" "requests>=2.25"; then
+        print_error "Could not install python-socketio and requests, which the agent needs"
+        exit 1
+    fi
+
+    if sudo -u "$USER" "$pip" install --prefer-binary "cryptography>=3.0"; then
+        print_success "Installed cryptography"
+    elif sudo -u "$USER" "$pip" install "rsa>=4.0"; then
+        print_warning "cryptography unavailable; using the pure-Python rsa package instead"
+    else
+        print_error "Could not install cryptography or rsa; the agent cannot authenticate"
+        exit 1
+    fi
+
+    if sudo -u "$USER" "$pip" install --prefer-binary "Pillow>=8.0"; then
+        print_success "Installed Pillow"
+    else
+        print_warning "Pillow unavailable; webcam images will be resized with ffmpeg, without flip/rotation"
+    fi
+}
+
+# Check what the agent actually imports, so a broken venv fails here rather
+# than as a crash-looping service.
+verify_python_deps() {
+    if ! sudo -u "$USER" "$VENV_DIR/bin/python" -c "import socketio, requests, websocket"; then
+        print_error "Python dependencies are incomplete (socketio, requests, websocket-client)"
+        exit 1
+    fi
+    if ! sudo -u "$USER" "$VENV_DIR/bin/python" -c "
+try:
+    import cryptography.hazmat.primitives.asymmetric.rsa
+except ImportError:
+    import rsa
+"; then
+        print_error "Neither cryptography nor rsa is importable; the agent cannot authenticate"
+        exit 1
+    fi
+    print_success "Python dependencies verified"
 }
 
 # Copy and configure files
