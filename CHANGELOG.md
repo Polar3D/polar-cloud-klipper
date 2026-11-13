@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.0] - 2026-11-13
+
+### Fixed
+- **Installer on stripped-down vendor images (e.g. FLSun T1 Pro).** A
+  Python package with no prebuilt wheel for the board (32-bit ARM, Python
+  3.7, compiler removed) failed the whole dependency install. The installer
+  now retries the packages one at a time, uses the pure-Python `rsa` package
+  when `cryptography` can't be installed (as the Kobra S1 already does), and
+  continues without Pillow (images are resized with ffmpeg). It then checks
+  that the agent's imports actually work instead of reporting success. A
+  failing `apt-get update` or `apt-get install` (e.g. 404ing end-of-life
+  Debian sources) no longer stops the install when the needed packages are
+  already present. Installs that worked before take the same path as before.
+
 ## [1.6.4] - 2026-11-13
 
 ### Fixed
