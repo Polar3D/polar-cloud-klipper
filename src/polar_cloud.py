@@ -618,13 +618,7 @@ class PolarCloudService:
         self.config_file = config_file
         self.config = configparser.ConfigParser()
 
-        # Use synchronous Socket.IO client for universal compatibility
-        self.sio = socketio.Client(
-            reconnection=True,
-            reconnection_attempts=0,  # Unlimited attempts
-            reconnection_delay=1,
-            reconnection_delay_max=30
-        )
+        self.sio = self._new_socketio_client()
 
         self.connected = False
         self.running = True
@@ -980,6 +974,38 @@ class PolarCloudService:
             logger.error(f"Error handling update extension method: {e}")
             return {"error": str(e)}
 
+    @staticmethod
+    def _new_socketio_client():
+        # Use synchronous Socket.IO client for universal compatibility
+        return socketio.Client(
+            reconnection=True,
+            reconnection_attempts=0,  # Unlimited attempts
+            reconnection_delay=1,
+            reconnection_delay_max=30
+        )
+
+    def _replace_socketio_client(self):
+        """Throw away a wedged Socket.IO client and start over with a fresh one.
+
+        After a Wi-Fi drop, sio.disconnect() can return without doing anything
+        (Engine.IO is no longer 'connected'), leaving sio.connected stuck at
+        True with no socket underneath. Nothing ever clears that flag, so the
+        HQ K1C sat offline and silent until restarted.
+        """
+        old = self.sio
+        try:
+            # Keep the old client's reconnect task from coming back to life and
+            # firing our handlers alongside the new client.
+            old.reconnection = False
+            abort = getattr(old, '_reconnect_abort', None)
+            if abort is not None:
+                abort.set()
+            old.eio.disconnect(abort=True)
+        except Exception as e:
+            logger.debug(f"Error tearing down old Socket.IO client: {e}")
+        self.sio = self._new_socketio_client()
+        self.setup_socketio_handlers()
+
     def setup_socketio_handlers(self):
         """Set up Socket.IO event handlers"""
 
@@ -1155,6 +1181,10 @@ class PolarCloudService:
                     logger.info("Hello response received successfully")
                     self.hello_sent = True
                     self.authenticated = True
+                    # A connect_error racing the reconnect can restart the
+                    # outage clock after connect cleared it; a successful hello
+                    # proves the cloud is reachable.
+                    self._cloud_down_since = None
                     self.last_error = None
                     self.last_error_time = None
                     self.write_status_file()
@@ -2744,6 +2774,11 @@ class PolarCloudService:
         # Avoid a redundant connect() that would just raise.
         if self.sio.connected:
             self.connected = True
+            # We got here without our connect handler running, so nothing armed
+            # the handshake watchdog. Arm it, or a stale client would leave us
+            # connected-but-unauthenticated forever with nothing to notice.
+            if not self.authenticated and self._auth_deadline is None:
+                self._auth_deadline = time.time() + self.hello_timeout
             return True
 
         server_url = self.config.get('polar_cloud', 'server_url', fallback='https://printer4.polar3d.com')
@@ -2805,6 +2840,10 @@ class PolarCloudService:
                 self.sio.disconnect()
             except Exception as e:
                 logger.error(f"Error forcing reconnect during health check: {e}")
+            if self.sio.connected:
+                logger.warning("Socket.IO client still reports connected after disconnect; "
+                               "replacing it")
+                self._replace_socketio_client()
             # Don't depend on the disconnect event; it doesn't fire if the
             # socket had already dropped.
             self._mark_cloud_disconnected()
