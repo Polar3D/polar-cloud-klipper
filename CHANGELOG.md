@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.6.4] - 2026-11-13
 
 ### Fixed
 - **Printer stayed offline after a Wi-Fi drop until restarted.** When the
