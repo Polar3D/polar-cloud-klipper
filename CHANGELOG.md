@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **Printer stayed offline after a Wi-Fi drop until restarted.** When the
+  hello handshake timed out on a half-dead connection, the watchdog's
+  disconnect did nothing and the Socket.IO client kept reporting itself
+  connected. The agent then believed it was connected, never sent hello
+  again and logged nothing, so the printer sat offline in Polar Cloud (seen
+  on a K1C with weak Wi-Fi). The agent now replaces a client that is stuck
+  like this, and re-arms the handshake watchdog whenever it adopts a
+  connection it didn't see open.
+- **"Cannot connect to the Polar Cloud server" stuck on after a reconnect.**
+  A connection error racing a successful reconnect left the outage flagged in
+  the status page even though the printer was online. A successful hello now
+  clears it.
+
 ## [1.6.3] - 2026-10-27
 
 ### Fixed
